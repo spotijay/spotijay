@@ -12,3 +12,10 @@ name = "client"
 [dependencies]
 refinery = {version = "0.2.1", features = ["rusqlite"]}
 rusqlite = "0.21.0"
+log = "0.4"
+env_logger = "0.7"
+url = "2.1.0"
+
+[dependencies.tungstenite]
+version = "0.10.0"
+default-features = false
