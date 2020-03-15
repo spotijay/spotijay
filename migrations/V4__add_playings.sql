@@ -1,10 +1,10 @@
 CREATE TABLE playings (
-    playing_id int,
-    track_id int,
-    room_id int,
-    dj_id int,
-    progress_ms int,
-    PRIMARY KEY (id),
+    playing_id integer,
+    track_id integer,
+    room_id integer,
+    dj_id integer,
+    progress_ms integer,
+    PRIMARY KEY (playing_id),
     FOREIGN KEY (track_id)
       REFERENCES tracks (track_id),
     FOREIGN KEY (room_id)
