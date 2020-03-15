@@ -11,6 +11,8 @@ name = "client"
 
 [dependencies]
 refinery = {version = "0.2.1", features = ["rusqlite"]}
+rustorm = {git = "https://github.com/edmellum/rustorm", features = ["with-sqlite"]}
+rustorm_dao = {git = "https://github.com/edmellum/rustorm"}
 rusqlite = "0.21.0"
 log = "0.4"
 env_logger = "0.7"
