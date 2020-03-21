@@ -20,26 +20,31 @@ use std::time::{SystemTime};
 
 type Tx = UnboundedSender<Message>;
 type PeerMap =
-    Arc<Mutex<HashMap<SocketAddr, Tx>>>;
+    Arc<Mutex<HashMap<SocketAddr, Peer>>>;
 type RoomDb = Arc<Mutex<Room>>;
 
-#[derive(Debug, Deserialize)]
+struct Peer {
+    tx: Tx,
+    user_id: Option<String>
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct User {
     id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct Track {
     uri: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct Playing {
     track: Track,
     started: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct Room {
     id: String,
     users: Vec<User>,
@@ -50,7 +55,14 @@ struct Room {
 
 #[derive(Debug, Deserialize)]
 enum Input {
+    Authenticate(User),
     JoinRoom(User)
+}
+
+#[derive(Debug, Clone, Serialize)]
+enum Output {
+    RoomState(Room),
+    RoomJoined(User)
 }
 
 async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, addr: SocketAddr) {
@@ -63,7 +75,7 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
 
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
-    peers.lock().unwrap().insert(addr, tx);
+    peers.lock().unwrap().insert(addr, Peer {tx: tx.clone(), user_id: None});
 
     let (outgoing, incoming) = ws_stream.split();
 
@@ -74,20 +86,36 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
             addr,
             input
         );
-        let peers = peers.lock().unwrap();
+        let mut peers = peers.lock().unwrap();
+        let mut db = db.lock().unwrap();
 
         match input {
+            Input::Authenticate(user) => {
+                peers.get_mut(&addr).unwrap().user_id = Some(user.id);
+
+                // Send complete room state.
+                tx.unbounded_send(serde_json::to_string(&Output::RoomState(db.clone())).unwrap().into());
+            }
             Input::JoinRoom(user) => {
-                db.lock().unwrap().users.push(user);
-                // TODO: Find all users in this room and inform them of the new user.
+                // Just one room for now.
+                db.users.push(user.clone());
+
+                let recipients = peers
+                    .iter()
+                    .map(|(_, peer)| peer.tx.clone());
+
+                for recp in recipients {
+                    let output = Output::RoomJoined(user.clone());
+                    recp.unbounded_send(serde_json::to_string(&output).unwrap().into()).unwrap();
+                }
             }
         }
 
-        // We want to broadcast the message to everyone except ourselves.
+        // For debug purposes we broadcast every message to everyone except ourselves.
         let broadcast_recipients = peers
             .iter()
             .filter(|(peer_addr, _)| peer_addr != &&addr)
-            .map(|(_, ws_sink)| ws_sink);
+            .map(|(_, peer)| peer.tx.clone());
 
         for recp in broadcast_recipients {
             recp.unbounded_send(msg.clone()).unwrap();
