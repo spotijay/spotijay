@@ -12,57 +12,20 @@ use futures::{
     StreamExt,
 };
 
-use serde::{Serialize, Deserialize};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::task;
+use std::time::SystemTime;
 use tungstenite::protocol::Message;
-use std::time::{SystemTime};
+
+use spotijay::types::{Room, User, Track, Input, Output};
 
 type Tx = UnboundedSender<Message>;
-type PeerMap =
-    Arc<Mutex<HashMap<SocketAddr, Peer>>>;
+type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
 type RoomDb = Arc<Mutex<Room>>;
 
 struct Peer {
-    tx: Tx,
-    user_id: Option<String>
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct User {
-    id: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct Track {
-    uri: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct Playing {
-    track: Track,
-    started: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Room {
-    id: String,
-    users: Vec<User>,
-    djs: Vec<User>,
-    queue: Vec<Track>,
-    playing: Option<Playing>,
-}
-
-#[derive(Debug, Deserialize)]
-enum Input {
-    Authenticate(User),
-    JoinRoom(User)
-}
-
-#[derive(Debug, Clone, Serialize)]
-enum Output {
-    RoomState(Room),
-    RoomJoined(User)
+    pub tx: Tx,
+    pub user_id: Option<String>,
 }
 
 async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, addr: SocketAddr) {
@@ -75,17 +38,19 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
 
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
-    peers.lock().unwrap().insert(addr, Peer {tx: tx.clone(), user_id: None});
+    peers.lock().unwrap().insert(
+        addr,
+        Peer {
+            tx: tx.clone(),
+            user_id: None,
+        },
+    );
 
     let (outgoing, incoming) = ws_stream.split();
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
         let input: Input = serde_json::from_str(msg.to_text().unwrap()).unwrap();
-        println!(
-            "Received a message from {}: {:?}",
-            addr,
-            input
-        );
+        println!("Received a message from {}: {:?}", addr, input);
         let mut peers = peers.lock().unwrap();
         let mut db = db.lock().unwrap();
 
@@ -94,19 +59,34 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
                 peers.get_mut(&addr).unwrap().user_id = Some(user.id);
 
                 // Send complete room state.
-                tx.unbounded_send(serde_json::to_string(&Output::RoomState(db.clone())).unwrap().into());
-            }
+                tx.unbounded_send(
+                    serde_json::to_string(&Output::RoomState(db.clone()))
+                        .unwrap()
+                        .into()
+                );
+            },
             Input::JoinRoom(user) => {
                 // Just one room for now.
                 db.users.push(user.clone());
 
-                let recipients = peers
-                    .iter()
-                    .map(|(_, peer)| peer.tx.clone());
+                let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                 for recp in recipients {
                     let output = Output::RoomJoined(user.clone());
-                    recp.unbounded_send(serde_json::to_string(&output).unwrap().into()).unwrap();
+                    recp.unbounded_send(serde_json::to_string(&output).unwrap().into())
+                        .unwrap();
+                }
+            },
+            Input::AddTrack(track) => {
+                // Just one room for now.
+                db.queue.push(track.clone());
+
+                let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
+
+                for recp in recipients {
+                    let output = Output::TrackAdded(track.clone());
+                    recp.unbounded_send(serde_json::to_string(&output).unwrap().into())
+                        .unwrap();
                 }
             }
         }
@@ -143,16 +123,14 @@ async fn run() -> Result<(), IoError> {
         djs: vec![User {
             id: "DropDuck".into(),
         }],
-        queue: Vec::new(),
-        playing: Some(Playing {
-            started: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            track: Track {
-                uri: "spotify:track:6yIjtVtnOBeC8SwdVHzAuF".into(),
-            },
-        }),
+        queue: vec![Track {
+            uri: "spotify:track:6yIjtVtnOBeC8SwdVHzAuF".into(),
+            duration_ms: 203733,
+        }],
+        started: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
     };
     let db = Arc::new(Mutex::new(room));
 

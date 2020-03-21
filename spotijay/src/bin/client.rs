@@ -1,16 +1,59 @@
+use rspotify::{
+    self,
+    client::Spotify,
+    model::offset::for_position,
+    oauth2::{SpotifyClientCredentials, SpotifyOAuth},
+    util::get_token,
+};
+use spotijay::types::{Output, Room};
+use std::{time::SystemTime, sync::{Arc, Mutex}};
 use tungstenite::{connect, Message};
 use url::Url;
+use async_std::task::block_on;
 
-pub struct ClientApp {
+pub struct ClientApp {}
 
+type Db = Arc<Mutex<Option<Room>>>;
+
+async fn play_song(uri: String, offset_ms: u32) {
+    let mut oauth = SpotifyOAuth::default()
+        .scope("user-modify-playback-state")
+        .build();
+
+    match get_token(&mut oauth).await {
+        Some(token_info) => {
+            let client_credential = SpotifyClientCredentials::default()
+                .token_info(token_info)
+                .build();
+            let spotify = Spotify::default()
+                .client_credentials_manager(client_credential)
+                .build();
+            let uris = vec![uri];
+            match spotify
+                .start_playback(
+                    None,
+                    None,
+                    Some(uris),
+                    for_position(0),
+                    Some(offset_ms),
+                )
+                .await
+            {
+                Ok(()) => println!("start playback successful, offset: {:?}", offset_ms),
+                Err(e) => eprintln!("start playback failed: {:?}", e),
+            }
+        }
+        None => println!("auth failed"),
+    };
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let _app = ClientApp {
+    let db: Db = Arc::new(Mutex::new(None));
 
-    };
+    let _app = ClientApp {};
 
     let (mut socket, response) =
         connect(Url::parse("ws://localhost:3012/").unwrap()).expect("Can't connect");
@@ -23,11 +66,31 @@ fn main() {
     }
 
     socket
-        .write_message(Message::Text("{\"Authenticate\": {\"id\": \"test_user_id\"}}".into()))
+        .write_message(Message::Text(
+            "{\"Authenticate\": {\"id\": \"test_user_id\"}}".into(),
+        ))
         .unwrap();
     loop {
         let msg = socket.read_message().expect("Error reading message");
         println!("Received: {}", msg);
+
+        let response: Output = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+        match response {
+            Output::RoomState(room) => {
+                db.lock().unwrap().replace(room.clone());
+
+                // Start playing first song from queue.
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+
+                let offset = now - room.started;
+
+                block_on(play_song(room.queue.first().unwrap().uri.clone(), offset as u32));
+            }
+            _ => (),
+        }
     }
     // socket.close(None);
 }
