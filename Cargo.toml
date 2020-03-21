@@ -1,28 +1,3 @@
-[package]
-name = "spotijay"
-version = "0.1.0"
-authors = ["Håkon H. Lerring <hakon@lerring.no>"]
-edition = "2018"
-
-[[bin]]
-name = "server"
-[[bin]]
-name = "client"
-
-[dependencies]
-refinery = {version = "0.2.1", features = ["rusqlite"]}
-rustorm = {git = "https://github.com/edmellum/rustorm", features = ["with-sqlite"]}
-rustorm_dao = {git = "https://github.com/edmellum/rustorm"}
-rusqlite = "0.21.0"
-log = "0.4"
-env_logger = "0.7"
-url = "2.1.0"
-rspotify = "0.9.0"
-warp = "0.2.2"
-tokio = { version = "0.2", features = ["macros"] }
-futures = "0.3.4"
-serde = { version = "1.0.104", features = ["derive"] }
-
-[dependencies.tungstenite]
-version = "0.10.0"
-default-features = false
+[workspace]
+members = ["webclient", "spotijay"]
+default-members = ["spotijay"]
