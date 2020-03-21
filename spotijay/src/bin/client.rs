@@ -1,15 +1,19 @@
-use rspotify::{
-    self,
+use async_std::task::block_on;
+use rspotify::blocking::{
     client::Spotify,
-    model::offset::for_position,
     oauth2::{SpotifyClientCredentials, SpotifyOAuth},
     util::get_token,
 };
+use rspotify::{
+    model::offset::for_position,
+};
 use spotijay::types::{Output, Room};
-use std::{time::SystemTime, sync::{Arc, Mutex}};
+use std::{
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 use tungstenite::{connect, Message};
 use url::Url;
-use async_std::task::block_on;
 
 pub struct ClientApp {}
 
@@ -20,7 +24,7 @@ async fn play_song(uri: String, offset_ms: u32) {
         .scope("user-modify-playback-state")
         .build();
 
-    match get_token(&mut oauth).await {
+    match get_token(&mut oauth) {
         Some(token_info) => {
             let client_credential = SpotifyClientCredentials::default()
                 .token_info(token_info)
@@ -29,16 +33,7 @@ async fn play_song(uri: String, offset_ms: u32) {
                 .client_credentials_manager(client_credential)
                 .build();
             let uris = vec![uri];
-            match spotify
-                .start_playback(
-                    None,
-                    None,
-                    Some(uris),
-                    for_position(0),
-                    Some(offset_ms),
-                )
-                .await
-            {
+            match spotify.start_playback(None, None, Some(uris), for_position(0), Some(offset_ms)) {
                 Ok(()) => println!("start playback successful, offset: {:?}", offset_ms),
                 Err(e) => eprintln!("start playback failed: {:?}", e),
             }
@@ -47,8 +42,7 @@ async fn play_song(uri: String, offset_ms: u32) {
     };
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     env_logger::init();
 
     let db: Db = Arc::new(Mutex::new(None));
@@ -87,10 +81,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let offset = now - room.started;
 
-                block_on(play_song(room.queue.first().unwrap().uri.clone(), offset as u32));
+                block_on(play_song(
+                    room.queue.first().unwrap().uri.clone(),
+                    offset as u32,
+                ));
             }
             _ => (),
         }
     }
-    // socket.close(None);
 }
