@@ -9,7 +9,7 @@ pub mod types {
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub struct Track {
         pub uri: String,
-        pub duration_ms: i32,
+        pub duration_ms: u32,
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]

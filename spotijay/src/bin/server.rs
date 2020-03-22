@@ -17,7 +17,7 @@ use async_std::task;
 use std::time::SystemTime;
 use tungstenite::protocol::Message;
 
-use spotijay::types::{Room, User, Track, Input, Output};
+use spotijay::types::{Input, Output, Room, Track, User};
 
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
@@ -62,9 +62,9 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
                 tx.unbounded_send(
                     serde_json::to_string(&Output::RoomState(db.clone()))
                         .unwrap()
-                        .into()
+                        .into(),
                 );
-            },
+            }
             Input::JoinRoom(user) => {
                 // Just one room for now.
                 db.users.push(user.clone());
@@ -76,15 +76,31 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
                     recp.unbounded_send(serde_json::to_string(&output).unwrap().into())
                         .unwrap();
                 }
-            },
+            }
             Input::AddTrack(track) => {
-                // Just one room for now.
-                db.queue.push(track.clone());
+                // Spotify's `/player/play` API silently drops everything on dupes, so let's just ignore those.
+                if !db.queue.iter().any(|x| x.uri == track.uri) {
+                    let now = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+
+                    let offset = now - db.started;
+                    let queue_length: u32 = db.queue.iter().map(|x| x.duration_ms).sum();
+
+                    // Old queue is done, make a new one.
+                    if offset > (queue_length as u64) {
+                        db.queue = vec![track.clone()];
+                        db.started = now;
+                    } else {
+                        db.queue.push(track.clone());
+                    }
+                }
 
                 let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                 for recp in recipients {
-                    let output = Output::TrackAdded(track.clone());
+                    let output = Output::RoomState(db.clone());
                     recp.unbounded_send(serde_json::to_string(&output).unwrap().into())
                         .unwrap();
                 }
@@ -130,7 +146,8 @@ async fn run() -> Result<(), IoError> {
         started: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64,
+            .as_millis() as u64
+            - 180000,
     };
     let db = Arc::new(Mutex::new(room));
 
