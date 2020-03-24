@@ -4,16 +4,44 @@ version = "0.1.0"
 authors = ["Håkon H. Lerring <hakon@lerring.no>"]
 edition = "2018"
 
+[lib]
+crate-type = ["cdylib"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 [dependencies]
-refinery = {version = "0.2.1", features = ["rusqlite"]}
-rustorm = {git = "https://github.com/edmellum/rustorm", features = ["with-sqlite"]}
-rustorm_dao = {git = "https://github.com/edmellum/rustorm"}
-rusqlite = "0.21.0"
-log = "0.4"
-env_logger = "0.7"
 url = "2.1.0"
-rspotify = "0.9.0"
-warp = "0.2.2"
-tokio = { version = "0.2", features = ["macros"] }
 futures = "0.3.4"
 serde = { version = "1.0.104", features = ["derive"] }
+serde_json = "1.0.48"
+wasm-bindgen = "0.2.59"
+console_error_panic_hook = "0.1.6"
+dotenv_codegen = "0.15.0"
+console_log = "0.1.2"
+gloo = "0.2.1"
+log = "0.4.8"
+wasm-bindgen-futures = "0.4.9"
+
+[dependencies.web-sys]
+version = "0.3.36"
+features = [
+    "Window",
+    "Location",
+    "History",
+    "console",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "EventTarget",
+    "MouseEvent",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "HtmlInputElement",
+    "InputEvent",
+    "Event"
+]

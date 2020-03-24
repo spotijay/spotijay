@@ -147,7 +147,7 @@ async fn run() -> Result<(), IoError> {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
-            - 180000,
+            - 180000, // Skip ahead to make testing easy.
     };
     let db = Arc::new(Mutex::new(room));
 

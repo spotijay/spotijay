@@ -1,0 +1,43 @@
+[env]
+PORT = "8000"
+
+[tasks.default]
+description = "Build wasm"
+dependencies = ["create_wasm"]
+
+[tasks.build]
+description = "Build"
+workspace = false
+command = "cargo"
+args = ["build"]
+
+[tasks.build_release]
+description = "Build --release"
+workspace = false
+command = "cargo"
+args = ["build", "--release"]
+
+[tasks.create_wasm]
+description = "Build with wasm-pack"
+install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V" }
+command = "wasm-pack"
+args = ["build", "--target", "web", "--out-name", "package", "--dev"]
+
+[tasks.create_wasm_release]
+description = "Build with wasm-pack --release"
+install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V" }
+command = "wasm-pack"
+args = ["build", "--target", "web", "--out-name", "package", "--release"]
+
+[tasks.serve]
+description = "Start server"
+install_crate = { crate_name = "microserver", binary = "microserver", test_arg = "-h" }
+workspace = false
+command = "microserver"
+args = ["--port", "${PORT}"]
+
+[tasks.watch]
+description = "Build, create wasms, and watch/recompile files for changes"
+workspace = false
+dependencies = ["build", "create_wasm"]
+watch = { ignore_pattern="pkg/*" }

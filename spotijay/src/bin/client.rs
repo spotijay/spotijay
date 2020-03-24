@@ -101,6 +101,7 @@ fn main() {
 
     socket
         .write_message(Message::Text(
+            // Comment in to test "auth"
             // serde_json::to_string(&Input::Authenticate(User {
             //     id: "test_user_id".into(),
             // }))

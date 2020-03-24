@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Spotijay</title>
+</head>
+<body>
+    <section id="app">
+        <!-- This will loading section will be overwritten by the javascript / wasm once it loads -->
+        <div style="text-align:center;">
+            Loading...
+        <div>
+    </section>
+    <script type="module">
+          // https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html
+          import init from '/pkg/package.js';
+          init('/pkg/package_bg.wasm');
+    </script>
+</body>
+</html>
