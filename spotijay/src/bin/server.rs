@@ -14,10 +14,11 @@ use futures::{
 
 use async_std::net::{TcpListener, TcpStream};
 use async_std::task;
-use std::time::SystemTime;
+use futures_timer::Delay;
+use std::time::{Duration, SystemTime};
 use tungstenite::protocol::Message;
 
-use spotijay::types::{Input, Output, Room, Track, User};
+use spotijay::types::{Input, Output, Playing, Room, Track, User};
 
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
@@ -28,7 +29,12 @@ struct Peer {
     pub user_id: Option<String>,
 }
 
-async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, addr: SocketAddr) {
+async fn handle_connection(
+    peers: PeerMap,
+    db_wrap: RoomDb,
+    raw_stream: TcpStream,
+    addr: SocketAddr,
+) {
     println!("Incoming TCP connection from: {}", addr);
 
     let ws_stream = async_tungstenite::accept_async(raw_stream)
@@ -52,7 +58,7 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
         let input: Input = serde_json::from_str(msg.to_text().unwrap()).unwrap();
         println!("Received a message from {}: {:?}", addr, input);
         let mut peers = peers.lock().unwrap();
-        let mut db = db.lock().unwrap();
+        let mut db = db_wrap.lock().unwrap();
 
         match input {
             Input::Authenticate(user) => {
@@ -77,23 +83,46 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
                         .unwrap();
                 }
             }
-            Input::AddTrack(track) => {
-                // Spotify's `/player/play` API silently drops everything on dupes, so let's just ignore those.
-                if !db.queue.iter().any(|x| x.uri == track.uri) {
-                    let now = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64;
+            Input::AddTrack(user_id, track_uri, duration_ms) => {
+                if let Some(current_dj) = db.djs.map(|x| x.current) {
+                    current_dj.queue.push(Track {
+                        uri: track_uri,
+                        duration_ms,
+                    });
 
-                    let offset = now - db.started;
-                    let queue_length: u32 = db.queue.iter().map(|x| x.duration_ms).sum();
+                    if let None = db.playing {
+                        db.playing = Some(Playing {
+                            uri: track_uri,
+                            duration_ms: duration_ms,
+                            started: now(),
+                        });
 
-                    // Old queue is done, make a new one.
-                    if offset > (queue_length as u64) {
-                        db.queue = vec![track.clone()];
-                        db.started = now;
-                    } else {
-                        db.queue.push(track.clone());
+                        let later_db = db_wrap.clone();
+                        task::spawn(async move {
+                            let mut db = later_db.lock().unwrap();
+                            let playing_duration = Duration::from_millis(duration_ms as u64);
+                            let next_up_duration = Duration::from_millis(5000);
+
+                            async_std::task::sleep(playing_duration - next_up_duration).await;
+
+                            if let Some(current_dj) = db.djs.map(|x| x.current) {
+                                db.next_up = current_dj.queue.pop();
+                            }
+                            println!("Next up queued: {:?}", db);
+
+                            task::spawn(async move {
+                                async_std::task::sleep(Duration::from_millis(5000)).await;
+
+                                let mut db = later_db.lock().unwrap();
+
+                                db.playing = db.next_up.take().map(|x| Playing {
+                                    uri: x.uri,
+                                    duration_ms: duration_ms,
+                                    started: now(),
+                                });
+                                println!("Now playing: {:?}", db);
+                            });
+                        });
                     }
                 }
 
@@ -129,6 +158,32 @@ async fn handle_connection(peers: PeerMap, db: RoomDb, raw_stream: TcpStream, ad
     peers.lock().unwrap().remove(&addr);
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn play_next(room: &Room) -> () {
+    room.djs
+        .get(room.current_dj_index)
+        .unwrap()
+        .queue
+        .first()
+        .unwrap();
+
+    if let None = db.playing {
+        db.playing = Some(Playing {
+            uri: track_uri,
+            duration_ms: duration_ms,
+            started: now(),
+        })
+    } else if let None = db.next_up {
+        db.next_up = Track { uri: track_uri }
+    }
+}
+
 async fn run() -> Result<(), IoError> {
     env_logger::init();
 
@@ -136,19 +191,15 @@ async fn run() -> Result<(), IoError> {
     let room = Room {
         id: "the_room".into(),
         users: Vec::new(),
+        current_dj_index: 0,
         djs: vec![User {
             id: "DropDuck".into(),
+            queue: Vec::new(),
         }],
-        queue: vec![Track {
-            uri: "spotify:track:6yIjtVtnOBeC8SwdVHzAuF".into(),
-            duration_ms: 203733,
-        }],
-        started: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-            - 180000, // Skip ahead to make testing easy.
+        playing: None,
+        next_up: None,
     };
+
     let db = Arc::new(Mutex::new(room));
 
     let peers = PeerMap::new(Mutex::new(HashMap::new()));
