@@ -5,11 +5,8 @@ use rspotify::blocking::{
     util::get_token,
 };
 use rspotify::model::offset::for_position;
-use spotijay::types::{Input, Output, Room, Track, User};
-use std::{
-    sync::{Arc, Mutex},
-    time::SystemTime,
-};
+use shared::lib::{now, Input, Output, Room, Track};
+use std::sync::{Arc, Mutex};
 use tungstenite::{connect, Message};
 use url::Url;
 
@@ -17,7 +14,7 @@ pub struct ClientApp {}
 
 type Db = Arc<Mutex<Option<Room>>>;
 
-async fn play_song(uris: Vec<String>, track_offset: u32, offset_ms: u32) {
+async fn play_song(uri: String, offset_ms: u32) {
     let mut oauth = SpotifyOAuth::default()
         .scope("user-modify-playback-state")
         .build();
@@ -30,21 +27,14 @@ async fn play_song(uris: Vec<String>, track_offset: u32, offset_ms: u32) {
             let spotify = Spotify::default()
                 .client_credentials_manager(client_credential)
                 .build();
-            let uris = uris;
             match spotify.start_playback(
                 None,
                 None,
-                Some(uris.clone()),
-                for_position(track_offset),
+                Some(vec![uri]),
+                for_position(0),
                 Some(offset_ms),
             ) {
-                Ok(()) => {
-                    dbg!(uris);
-                    println!(
-                        "start playback successful, offset: {:?}, track_offset: {:?}",
-                        offset_ms, track_offset
-                    )
-                }
+                Ok(()) => println!("start playback successful"),
                 Err(e) => eprintln!("start playback failed: {:?}", e),
             }
         }
@@ -52,34 +42,26 @@ async fn play_song(uris: Vec<String>, track_offset: u32, offset_ms: u32) {
     };
 }
 
-/// Play correct song from queue with correct offset based on current time and aggregated individual song times. All the other songs get queued.
-fn play_queue(room: Room) {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+async fn queue_song(uri: String) {
+    let mut oauth = SpotifyOAuth::default()
+        .scope("user-modify-playback-state")
+        .build();
 
-    let room_start_offset = now - room.started;
-
-    let mut queue_index = 0;
-    let mut next_song_offset = 0;
-    let mut current_song_offset = 0;
-
-    while next_song_offset < room_start_offset && queue_index < room.queue.len() {
-        current_song_offset = next_song_offset;
-        next_song_offset += room.queue.get(queue_index).unwrap().duration_ms as u64;
-        queue_index += 1;
-    }
-
-    // Only play if we're not past the last song.
-    if room_start_offset < next_song_offset {
-        let song_offset = room_start_offset - current_song_offset;
-        let queue_offset: u32 = (queue_index as u32).saturating_sub(1);
-
-        let uris = room.queue.into_iter().map(|x| x.uri.clone()).collect();
-
-        block_on(play_song(uris, queue_offset, song_offset as u32));
-    }
+    match get_token(&mut oauth) {
+        Some(token_info) => {
+            let client_credential = SpotifyClientCredentials::default()
+                .token_info(token_info)
+                .build();
+            let spotify = Spotify::default()
+                .client_credentials_manager(client_credential)
+                .build();
+            match spotify.add_item_to_queue(uri, None) {
+                Ok(()) => println!("add to queue successful"),
+                Err(e) => eprintln!("add to queue failed: {:?}", e),
+            }
+        }
+        None => println!("auth failed"),
+    };
 }
 
 fn main() {
@@ -102,15 +84,16 @@ fn main() {
     socket
         .write_message(Message::Text(
             // Comment in to test "auth"
-            // serde_json::to_string(&Input::Authenticate(User {
-            //     id: "test_user_id".into(),
-            // }))
+            serde_json::to_string(&Input::Authenticate("test_user_id".into())).unwrap(),
+            // serde_json::to_string(&Input::AddTrack(
+            //     "DropDuck".into(),
+            //     Track {
+            //         duration_ms: 17000,
+            //         uri: "spotify:track:7qLJdsmsNsMpUpqoTj7g9p".into(),
+            //     },
+            // ))
             // .unwrap(),
-            serde_json::to_string(&Input::AddTrack(Track {
-                duration_ms: 234693,
-                uri: "spotify:track:5cXg9IQS34FzLVdHhp7hu7".into(),
-            }))
-            .unwrap(),
+            //serde_json::to_string(&Input::BecomeDj("DropDuck".into())).unwrap(),
         ))
         .unwrap();
     loop {
@@ -119,13 +102,24 @@ fn main() {
 
         let response: Output = serde_json::from_str(msg.to_text().unwrap()).unwrap();
 
-        match response {
+        match response.clone() {
             Output::RoomState(room) => {
-                db.lock().unwrap().replace(room.clone());
-
-                if room.queue.len() != 0 {
-                    play_queue(room);
+                // First RoomState, lets become a DJ.
+                if let None = *db.lock().unwrap() {
+                    socket
+                        .write_message(Message::Text(
+                            serde_json::to_string(&Input::BecomeDj("DropDuck".into())).unwrap(),
+                        ))
+                        .unwrap();
                 }
+                db.lock().unwrap().replace(room.clone());
+            }
+            Output::TrackPlayed(playing) => {
+                let offset = now() - playing.started;
+                block_on(play_song(playing.uri, offset as u32));
+            }
+            Output::NextTrackQueued(track) => {
+                block_on(queue_song(track.uri));
             }
             _ => (),
         }

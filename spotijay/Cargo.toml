@@ -10,6 +10,7 @@ name = "server"
 name = "client"
 
 [dependencies]
+shared = {path = "../shared"}
 refinery = {version = "0.2.1", features = ["rusqlite"]}
 rustorm = {git = "https://github.com/edmellum/rustorm", features = ["with-sqlite"]}
 rustorm_dao = {git = "https://github.com/edmellum/rustorm"}
@@ -23,6 +24,6 @@ serde_json = "1.0.48"
 async-tungstenite = { version = "0.4.0", features = ["async-std-runtime"] }
 tungstenite = "0.10.1"
 async-std = "1.5.0"
-rspotify = {version = "0.9.0", features = ["blocking"]}
+rspotify = {git = "https://github.com/edmellum/rspotify", features = ["blocking"]}
 reqwest = {version = "0.10", features = ["blocking"]}
 futures-timer = "3.0.2"

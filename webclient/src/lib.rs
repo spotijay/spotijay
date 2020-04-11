@@ -1,134 +1,652 @@
-#[macro_use]
-extern crate dotenv_codegen;
-
-use wasm_bindgen::prelude::*;
+use js_sys::Function;
+use seed::{prelude::*, *};
+use serde::{Deserialize, Serialize};
+use std::iter;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::{spawn_local, JsFuture};
-use web_sys::{HtmlInputElement, Request, RequestInit, RequestMode, Response};
+use web_sys::{MessageEvent, WebSocket};
 
-use gloo::events::EventListener;
-use log::Level;
-use serde::Serialize;
-use url::Url;
+use shared::lib::{Input, Output, Room, Track, User};
 
-#[derive(Serialize)]
-struct PlayRequest {
-    uris: Vec<String>,
+mod spotify;
+
+const WS_URL: &str = "ws://127.0.0.1:3012/";
+
+const SPOTIFY_PROFILE_URL: &str = "https://api.spotify.com/v1/me";
+const SPOTIFY_PLAY_URL: &str = "https://api.spotify.com/v1/me/player/play";
+const SPOTIFY_QUEUE_URL: &str = "https://api.spotify.com/v1/me/player/queue";
+const SPOTIFY_SEARCH_URL: &str = "https://api.spotify.com/v1/search";
+
+#[derive(Debug, Clone, PartialEq)]
+enum Page {
+    Home,
+    Callback,
 }
 
-fn get_login_url() -> url::Url {
-    Url::parse_with_params(
-        "https://accounts.spotify.com/authorize",
-        &[
-            ("client_id", dotenv!("CLIENT_ID")),
-            ("response_type", "token"),
-            ("redirect_uri", "http://localhost:8000/callback"),
-            ("scope", "user-modify-playback-state"),
-        ],
-    )
-    .unwrap()
+impl Page {
+    fn path(&self) -> Vec<&str> {
+        match self {
+            Page::Home => vec![],
+            Page::Callback => vec!["callback"],
+        }
+    }
 }
 
-async fn play(access_token: String, uri: String) {
-    let body = serde_json::to_string(&PlayRequest { uris: vec![uri] }).unwrap();
-
-    let mut opts = RequestInit::new();
-    opts.method("PUT");
-    opts.mode(RequestMode::Cors);
-    opts.body(Some(&JsValue::from(body)));
-
-    let url = "https://api.spotify.com/v1/me/player/play";
-
-    let request = Request::new_with_str_and_init(&url, &opts).unwrap();
-
-    request
-        .headers()
-        .set("Authorization", &format!("Bearer {}", &access_token))
-        .unwrap();
-
-    let window = web_sys::window().expect("no global `window` exists");
-    let resp_value = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .unwrap();
-
-    let resp: Response = resp_value.dyn_into().unwrap();
-    JsFuture::from(resp.json().unwrap()).await.unwrap();
+impl From<Page> for Url {
+    fn from(page: Page) -> Self {
+        page.path().into()
+    }
 }
 
-#[wasm_bindgen(start)]
-pub async fn main() {
-    console_error_panic_hook::set_once();
-    console_log::init_with_level(Level::Debug).unwrap();
+#[derive(Debug)]
+struct Model {
+    data: Data,
+    page: Page,
+    services: Services,
+}
 
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let body = document.body().unwrap();
+#[derive(Debug)]
+enum Data {
+    Authed(AuthedModel),
+    UnAuthed(),
+}
 
-    let mut access_token_wrapper = None;
+#[derive(Debug)]
+struct AuthedModel {
+    auth: Auth,
+    search: String,
+    room: Option<Room>,
+    profile: Option<spotify::SpotifyProfile>,
+    search_result: Option<spotify::SpotifySearchResult>,
+}
 
-    if window.location().pathname().unwrap() == "/callback" {
-        let url = Url::parse(&window.location().href().unwrap().replace("#", "?")).unwrap();
-        let query_pairs = url.query_pairs();
-        access_token_wrapper = Some(
-            query_pairs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Auth {
+    access_token: String,
+    expires_epoch: u64,
+}
+
+impl AuthedModel {
+    fn new(auth: Auth) -> Self {
+        AuthedModel {
+            auth: auth,
+            search: "".into(),
+            room: None,
+            profile: None,
+            search_result: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Services {
+    ws: WebSocket,
+    ls: seed::browser::service::storage::Storage,
+}
+
+fn before_mount(_: Url) -> BeforeMount {
+    // Since we have the "loading..." text in the app section of index.html,
+    // we use MountType::Takover which will overwrite it with the seed generated html
+    BeforeMount::new().mount_type(MountType::Takeover)
+}
+
+fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
+    let ls = storage::get_storage().expect("get `LocalStorage`");
+    let ws = WebSocket::new(WS_URL).unwrap();
+
+    register_ws_handler(WebSocket::set_onopen, Msg::Connected, &ws, orders);
+    register_ws_handler(WebSocket::set_onclose, Msg::Closed, &ws, orders);
+    register_ws_handler(WebSocket::set_onmessage, Msg::ServerMessage, &ws, orders);
+    register_ws_handler(WebSocket::set_onerror, Msg::Error, &ws, orders);
+
+    let parsed_page = match url.path[0].as_ref() {
+        "callback" => Page::Callback,
+        _ => Page::Home,
+    };
+
+    if parsed_page == Page::Callback {
+        orders.send_msg(Msg::LoggedIn);
+
+        AfterMount::new(Model {
+            data: Data::UnAuthed(),
+            page: Page::Home,
+            services: Services { ws, ls },
+        })
+    } else {
+        let auth = ls
+            .get_item("spotify_auth")
+            .expect("try to get item from `LocalStorage`");
+
+        let auth: Option<Auth> = auth.map(|x| serde_json::from_str(&x).unwrap());
+
+        let data = match auth {
+            Some(auth) => {
+                if auth.access_token.is_empty() {
+                    Data::UnAuthed()
+                } else {
+                    orders.perform_cmd(get_spotify_profile(auth.clone()));
+                    Data::Authed(AuthedModel::new(auth))
+                }
+            }
+            _ => Data::UnAuthed(),
+        };
+
+        AfterMount::new(Model {
+            data: data,
+            page: Page::Home,
+            services: Services { ws, ls },
+        })
+    }
+}
+
+fn register_ws_handler<T, F>(
+    ws_cb_setter: fn(&WebSocket, Option<&Function>),
+    msg: F,
+    ws: &WebSocket,
+    orders: &mut impl Orders<Msg>,
+) where
+    T: wasm_bindgen::convert::FromWasmAbi + 'static,
+    F: Fn(T) -> Msg + 'static,
+{
+    let (app, msg_mapper) = (orders.clone_app(), orders.msg_mapper());
+
+    let closure = Closure::new(move |data| {
+        app.update(msg_mapper(msg(data)));
+    });
+
+    ws_cb_setter(ws, Some(closure.as_ref().unchecked_ref()));
+    closure.forget();
+}
+
+#[derive(Debug, Clone)]
+enum Msg {
+    Connected(JsValue),
+    ServerMessage(MessageEvent),
+    Closed(JsValue),
+    Error(JsValue),
+    ChangePage(Page),
+    AddTrack(String),
+    RemoveTrack(String),
+    SearchFetched(seed::fetch::ResponseDataResult<spotify::SpotifySearchResult>),
+    ProfileFetched(seed::fetch::ResponseDataResult<spotify::SpotifyProfile>),
+    LoggingIn,
+    LoggedIn,
+    Logout,
+    Queued,
+    Played,
+    SearchChange(String),
+    BecomeDj,
+    UnbecomeDj,
+}
+
+async fn get_spotify_profile(auth: Auth) -> Result<Msg, Msg> {
+    if js_sys::Date::now() as u64 > auth.expires_epoch {
+        futures::future::ok(Msg::Logout).await
+    } else {
+        Request::new(SPOTIFY_PROFILE_URL)
+            .header("Authorization", &format!("Bearer {}", auth.access_token))
+            .fetch_json_data(Msg::ProfileFetched)
+            .await
+    }
+}
+
+async fn get_spotify_search(auth: Auth, search: String) -> Result<Msg, Msg> {
+    if js_sys::Date::now() as u64 > auth.expires_epoch {
+        futures::future::ok(Msg::Logout).await
+    } else {
+        let url = url::Url::parse_with_params(
+            SPOTIFY_SEARCH_URL,
+            &[("q", search), ("type", "track".into())],
+        )
+        .unwrap()
+        .into_string();
+
+        Request::new(url)
+            .header("Authorization", &format!("Bearer {}", auth.access_token))
+            .fetch_json_data(Msg::SearchFetched)
+            .await
+    }
+}
+
+async fn put_spotify_play(auth: Auth, uri: String, position_ms: u32) -> Result<Msg, Msg> {
+    if js_sys::Date::now() as u64 > auth.expires_epoch {
+        futures::future::ok(Msg::Logout).await
+    } else {
+        Request::new(SPOTIFY_PLAY_URL)
+            .header("Authorization", &format!("Bearer {}", auth.access_token))
+            .method(seed::browser::service::fetch::Method::Put)
+            .send_json(&spotify::PlayRequest {
+                uris: vec![uri],
+                position_ms,
+            })
+            .fetch(|_| Msg::Played)
+            .await
+    }
+}
+
+async fn post_spotify_queue(auth: Auth, uri: String) -> Result<Msg, Msg> {
+    if js_sys::Date::now() as u64 > auth.expires_epoch {
+        futures::future::ok(Msg::Logout).await
+    } else {
+        let url = url::Url::parse_with_params(SPOTIFY_QUEUE_URL, &[("uri", uri)])
+            .unwrap()
+            .into_string();
+        Request::new(url)
+            .header("Authorization", &format!("Bearer {}", auth.access_token))
+            .method(seed::browser::service::fetch::Method::Post)
+            .fetch(|_| Msg::Queued)
+            .await
+    }
+}
+
+fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
+    log!("msg: ", msg);
+    log!("model: ", model);
+
+    match msg {
+        Msg::Logout => model.data = Data::UnAuthed(),
+        _ => match &mut model.data {
+            Data::Authed(authed_model) => authed_update(msg, &model.services, authed_model, orders),
+            Data::UnAuthed() => unauthed_update(msg, model, orders),
+        },
+    };
+}
+
+fn unauthed_update(msg: Msg, mut model: &mut Model, orders: &mut impl Orders<Msg>) {
+    match msg {
+        Msg::LoggingIn => {
+            log!("Loggin in");
+            window().location().set_href(&spotify::login_url()).unwrap();
+        }
+        Msg::LoggedIn => {
+            let url =
+                url::Url::parse(&window().location().href().unwrap().replace("#", "?")).unwrap();
+            let query_pairs = url.query_pairs();
+            let access_token = query_pairs
                 .clone()
                 .find(|x| x.0 == "access_token")
                 .unwrap()
                 .1
-                .into_owned(),
-        );
+                .into_owned();
 
-        // TODO: check this before every request to log user out automatically when it expires.
-        // We can also regularily poll, as a long setTimeout doesn't work, it gets cancelled.
-        let _expires_in = query_pairs.clone().find(|x| x.0 == "expires_in").unwrap();
+            // TODO: check this before every request to log user out automatically when it expires.
+            // We can also regularily poll, as a long setTimeout doesn't work, it gets cancelled.
+            let expires_in = query_pairs
+                .clone()
+                .find(|x| x.0 == "expires_in")
+                .unwrap()
+                .1
+                .into_owned();
 
-        window
-            .history()
-            .unwrap()
-            .push_state_with_url(&JsValue::NULL, &"Spotijay", Some("/"))
-            .unwrap();
+            let expires_epoch =
+                js_sys::Date::now() as u64 + (expires_in.parse::<u64>().unwrap() * 1000);
+
+            let auth = Auth {
+                access_token,
+                expires_epoch: expires_epoch,
+            };
+            storage::store_data(&model.services.ls, "spotify_auth", &auth);
+            model.data = Data::Authed(AuthedModel::new(auth.clone()));
+
+            seed::push_route(Page::Home.path());
+            model.page = Page::Home;
+
+            orders.perform_cmd(get_spotify_profile(auth.clone()));
+        }
+        Msg::ChangePage(page) => {
+            seed::push_route(page.path());
+            model.page = page;
+        }
+        Msg::Logout => {}
+        Msg::Connected(_) => {
+            log!("WebSocket connection is open now");
+        }
+        Msg::Closed(_) => {
+            log!("WebSocket connection was closed");
+        }
+        Msg::Error(_) => {
+            log!("Error");
+        }
+        _ => {
+            error!("Invalid Msg for unauthed user: {:?}", msg);
+        }
     }
+}
 
-    if let Some(access_token) = access_token_wrapper {
-        let play_input = document.create_element("input").unwrap();
-        play_input.set_id("play_input");
-        body.append_child(&play_input).unwrap();
-
-        let play_button = document.create_element("button").unwrap();
-        play_button.set_inner_html("Play");
-        body.append_child(&play_button).unwrap();
-
-        let play_button_click_listener = EventListener::new(&play_button, "click", move |_| {
-            let token = access_token.clone();
-
-            // TODO: Use a global to store this from an event listener instead. Or just use a framework like Seed.
-            let play_input_el = web_sys::window()
-                .unwrap()
-                .document()
-                .unwrap()
-                .get_element_by_id("play_input")
+fn authed_update(
+    msg: Msg,
+    services: &Services,
+    authed_model: &mut AuthedModel,
+    orders: &mut impl Orders<Msg>,
+) {
+    match msg {
+        Msg::LoggingIn => {
+            error!("Loggin in again after already logged in, oh no");
+        }
+        Msg::LoggedIn => {
+            error!("Logged in again after already logged in, oh no");
+        }
+        Msg::Queued => {}
+        Msg::Played => {}
+        Msg::ChangePage(_) => {}
+        Msg::Logout => {}
+        Msg::Connected(_) => {}
+        Msg::BecomeDj => {
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::BecomeDj(
+                        authed_model.profile.clone().unwrap().id,
+                    ))
+                    .unwrap(),
+                )
                 .unwrap();
-            let play_input_value = JsCast::dyn_ref::<HtmlInputElement>(&play_input_el)
+        }
+        Msg::UnbecomeDj => {
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::UnbecomeDj(
+                        authed_model.profile.clone().unwrap().id,
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        Msg::AddTrack(track_id) => {
+            let track = authed_model
+                .search_result
+                .clone()
                 .unwrap()
-                .value();
+                .tracks
+                .items
+                .iter()
+                .find(|x| x.id == track_id)
+                .unwrap()
+                .clone();
 
-            spawn_local(play(token, play_input_value.into()));
-        });
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::AddTrack(
+                        authed_model.profile.clone().unwrap().id,
+                        Track {
+                            id: track.id,
+                            name: track.name,
+                            uri: track.uri,
+                            duration_ms: track.duration_ms,
+                        },
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
 
-        play_button_click_listener.forget();
+            authed_model.search_result = None;
+        }
+        Msg::RemoveTrack(track_id) => {
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::RemoveTrack(
+                        authed_model.profile.clone().unwrap().id,
+                        track_id,
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+
+            authed_model.search_result = None;
+        }
+        Msg::ProfileFetched(res) => match res {
+            Ok(profile) => {
+                services
+                    .ws
+                    .send_with_str(
+                        &serde_json::to_string(&Input::JoinRoom(User {
+                            id: profile.id.clone(),
+                            queue: vec![],
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap();
+                authed_model.profile = Some(profile)
+            }
+            Err(e) => error!("Profile error: {}", e),
+        },
+        Msg::ServerMessage(msg_event) => {
+            log!("Client received a message");
+            let txt = msg_event.data().as_string().unwrap();
+            let json: Output = serde_json::from_str(&txt).unwrap();
+
+            match json {
+                Output::RoomState(room) => {
+                    if let None = authed_model.room {
+                        if let Some(playing) = &room.playing {
+                            let offset_ms = (js_sys::Date::now() as u64) - playing.started;
+                            orders.perform_cmd(put_spotify_play(
+                                authed_model.auth.clone(),
+                                playing.uri.clone(),
+                                offset_ms as u32,
+                            ));
+                        }
+                    }
+
+                    authed_model.room = Some(room);
+                }
+                Output::TrackPlayed(playing) => {
+                    let offset_ms = (js_sys::Date::now() as u64) - playing.started;
+                    orders.perform_cmd(put_spotify_play(
+                        authed_model.auth.clone(),
+                        playing.uri.clone(),
+                        offset_ms as u32,
+                    ));
+                }
+                Output::NextTrackQueued(track) => {
+                    orders.perform_cmd(post_spotify_queue(
+                        authed_model.auth.clone(),
+                        track.uri.clone(),
+                    ));
+                }
+            }
+        }
+        Msg::Closed(_) => {
+            log!("WebSocket connection was closed");
+        }
+        Msg::Error(_) => {
+            log!("Error");
+        }
+        Msg::SearchChange(val) => {
+            authed_model.search = val.clone();
+
+            if !val.is_empty() {
+                orders.perform_cmd(get_spotify_search(authed_model.auth.clone(), val.clone()));
+            }
+        }
+        Msg::SearchFetched(res) => match res {
+            Ok(search_results) => authed_model.search_result = Some(search_results),
+            Err(e) => error!("Profile error: {}", e),
+        },
+    }
+}
+
+fn current_user(user_id: String, room: Room) -> Option<User> {
+    if let Some(djs) = &room.djs {
+        iter::once(&djs.current)
+            .chain(djs.before.iter())
+            .chain(djs.after.iter())
+            .chain(room.users.iter())
+            .find(|x| x.id == user_id)
+            .map(|x| x.clone())
+    } else {
+        room.users
+            .iter()
+            .find(|x| x.id == user_id)
+            .map(|x| x.clone())
+    }
+}
+
+fn users_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
+    let room = authed_model.room.clone()?;
+    let items = room.users.iter().map(|x| li![x.id]);
+
+    Some(ul![items])
+}
+
+fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
+    let mut items: Vec<Node<Msg>> = Vec::new();
+
+    let tracks = current_user(authed_model.profile.clone()?.id, authed_model.room.clone()?)?
+        .queue
+        .into_iter();
+
+    for track in tracks {
+        let event_track = track.clone();
+
+        items.push(li![button![
+            ev(Ev::Click, move |_| Msg::RemoveTrack(event_track.id)),
+            track.name
+        ]]);
     }
 
-    let login_button = document.create_element("button").unwrap();
-    login_button.set_inner_html("Login");
+    Some(ol![items])
+}
 
-    body.append_child(&login_button).unwrap();
+fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
+    let mut items: Vec<Node<Msg>> = Vec::new();
 
-    let login_button_click_listener = EventListener::new(&login_button, "click", move |_| {
-        window
-            .location()
-            .set_href(get_login_url().as_str())
-            .unwrap();
-    });
+    let tracks = authed_model.search_result.clone()?.tracks.items.into_iter();
 
-    login_button_click_listener.forget();
+    for track in tracks {
+        let event_track = track.clone();
+
+        items.push(li![button![
+            ev(Ev::Click, move |_| Msg::AddTrack(event_track.id)),
+            track.name
+        ]]);
+    }
+
+    Some(ul![items])
+}
+
+fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
+    let mut items: Vec<Node<Msg>> = Vec::new();
+
+    let djs = authed_model.room.clone().and_then(|x| x.djs);
+
+    if let Some(djs) = djs {
+        let djs_iter = djs
+            .before
+            .iter()
+            .chain(iter::once(&djs.current))
+            .chain(djs.after.iter());
+
+        let playing = authed_model
+            .room
+            .clone()
+            .and_then(|x| x.playing.map(|x| x.name))
+            .unwrap_or("Nothing!".to_string());
+
+        for dj in djs_iter {
+            items.push(li![button![
+                ev(Ev::Click, move |_| Msg::UnbecomeDj),
+                if dj.id == djs.current.id {
+                    div![b![dj.id], format!(" - {}", playing)]
+                } else {
+                    span![dj.id]
+                }
+            ]]);
+        }
+
+        let mut djs_iter = iter::once(&djs.current)
+            .chain(djs.before.iter())
+            .chain(djs.after.iter());
+
+        if djs_iter.any(|x| x.id != authed_model.profile.clone().unwrap().id) {
+            items.push(li![button![
+                simple_ev(Ev::Click, Msg::BecomeDj),
+                "Become a DJ"
+            ]]);
+        }
+    } else {
+        items.push(li![button![
+            simple_ev(Ev::Click, Msg::BecomeDj),
+            "Become a DJ"
+        ]]);
+    }
+
+    Some(ol![items])
+}
+
+fn authed_view(authed_model: &AuthedModel) -> Node<Msg> {
+    div![
+        h2![format!(
+            "logged in {}!",
+            authed_model
+                .profile
+                .clone()
+                .map(|x| x.display_name)
+                .unwrap_or("".to_string())
+        )],
+        djs_view(authed_model).unwrap_or(div![]),
+        if let Some(items) = playlist_view(authed_model) {
+            div![
+                h3!["Your playlist"],
+                input![
+                    attrs! {At::Placeholder => "Search for tracks"},
+                    input_ev(Ev::Input, Msg::SearchChange)
+                ],
+                search_result_view(authed_model).unwrap_or(items),
+            ]
+        } else {
+            div![]
+        },
+        div![
+            h3!["Users"],
+            users_view(authed_model).unwrap_or(div!["No users"])
+        ]
+    ]
+}
+
+fn unauthed_view() -> Node<Msg> {
+    div![button![simple_ev(Ev::Click, Msg::LoggingIn), "Login"]]
+}
+
+fn data_view(data: &Data) -> Node<Msg> {
+    match &data {
+        Data::Authed(authed) => {
+            if authed.profile.is_some() && authed.room.is_some() {
+                authed_view(authed)
+            } else {
+                h1!["Loading"]
+            }
+        }
+        Data::UnAuthed() => unauthed_view(),
+    }
+}
+
+fn view(model: &Model) -> impl View<Msg> {
+    let data = &model.data;
+
+    vec![h1!["Spotijay"], data_view(data)]
+}
+
+fn routes(url: Url) -> Option<Msg> {
+    let parsed_page = match url.path[0].as_ref() {
+        "callback" => Page::Callback,
+        _ => Page::Home,
+    };
+
+    if parsed_page == Page::Callback {
+        Some(Msg::LoggedIn)
+    } else {
+        Some(Msg::ChangePage(parsed_page))
+    }
+}
+
+#[wasm_bindgen(start)]
+pub fn start() {
+    App::builder(update, view)
+        .before_mount(before_mount)
+        .after_mount(after_mount)
+        .routes(routes)
+        .build_and_start();
 }

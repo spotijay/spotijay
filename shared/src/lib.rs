@@ -1,6 +1,6 @@
-pub mod types {
+pub mod lib {
     use serde::{Deserialize, Serialize};
-    use std::{time::SystemTime, collections::HashMap};
+    use std::{time::SystemTime};
 
     // TODO: Display name and avatar
     #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -11,44 +11,63 @@ pub mod types {
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub struct Track {
+        pub id: String,
+        pub name: String,
         pub uri: String,
         pub duration_ms: u32,
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub struct Playing {
+        pub name: String,
         pub uri: String,
         pub duration_ms: u32,
         pub started: u64,
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
-    pub struct Djs {
-        pub before: Vec<User>,
-        pub current: User,
-        pub after: Vec<User>
+    pub struct Zipper<T> {
+        pub before: Vec<T>,
+        pub current: T,
+        pub after: Vec<T>
+    }
+
+    impl<T> Zipper<T> {
+        pub fn len(&self) -> usize {
+            self.before.len() + self.after.len() + 1
+        }
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub struct Room {
         pub id: String,
         pub users: Vec<User>,
-        pub djs: Option<Djs>,
+        pub djs: Option<Zipper<User>>,
         pub playing: Option<Playing>,
         pub next_up: Option<Track>,
     }
 
-    #[derive(Debug, Deserialize, Serialize)]
+    #[derive(Debug, Clone, Deserialize, Serialize)]
     pub enum Input {
-        Authenticate(User),
+        Authenticate(String),
         JoinRoom(User),
-        AddTrack(String, String, u32),
+        BecomeDj(String),
+        UnbecomeDj(String),
+        AddTrack(String, Track),
+        RemoveTrack(String, String),
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub enum Output {
         RoomState(Room),
-        RoomJoined(User),
-        TrackAdded(Track),
+        TrackPlayed(Playing),
+        NextTrackQueued(Track),
+    }
+
+    pub fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
     }
 }
