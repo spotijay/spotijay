@@ -470,9 +470,7 @@ fn authed_update(
 
 fn current_user(user_id: String, room: Room) -> Option<User> {
     if let Some(djs) = &room.djs {
-        iter::once(&djs.current)
-            .chain(djs.before.iter())
-            .chain(djs.after.iter())
+        djs.iter()
             .chain(room.users.iter())
             .find(|x| x.id == user_id)
             .map(|x| x.clone())
@@ -533,19 +531,13 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let djs = authed_model.room.clone().and_then(|x| x.djs);
 
     if let Some(djs) = djs {
-        let djs_iter = djs
-            .before
-            .iter()
-            .chain(iter::once(&djs.current))
-            .chain(djs.after.iter());
-
         let playing = authed_model
             .room
             .clone()
             .and_then(|x| x.playing.map(|x| x.name))
             .unwrap_or("Nothing!".to_string());
 
-        for dj in djs_iter {
+        for dj in djs.iter() {
             items.push(li![button![
                 ev(Ev::Click, move |_| Msg::UnbecomeDj),
                 if dj.id == djs.current.id {
@@ -556,11 +548,7 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
             ]]);
         }
 
-        let mut djs_iter = iter::once(&djs.current)
-            .chain(djs.before.iter())
-            .chain(djs.after.iter());
-
-        if djs_iter.any(|x| x.id != authed_model.profile.clone().unwrap().id) {
+        if djs.iter().any(|x| x.id != authed_model.profile.clone().unwrap().id) {
             items.push(li![button![
                 simple_ev(Ev::Click, Msg::BecomeDj),
                 "Become a DJ"

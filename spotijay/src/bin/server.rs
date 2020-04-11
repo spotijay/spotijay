@@ -83,16 +83,20 @@ async fn handle_connection(
 
                     // Just one room for now.
                     if !db.users.iter().any(|x| x.id == user.id) {
-                        db.users.push(user.clone());
+                        if let Some(djs) = db.djs.clone() {
+                            if !djs.iter().any(|x| x.id == user.id) {
+                                db.users.push(user.clone());
+                            }
+                        } else {
+                            db.users.push(user.clone());
+                        }
                     }
 
                     // Send complete room state.
                     tx.unbounded_send(
-                        serde_json::to_string_pretty(&Output::RoomState(
-                            db.clone(),
-                        ))
-                        .unwrap()
-                        .into(),
+                        serde_json::to_string_pretty(&Output::RoomState(db.clone()))
+                            .unwrap()
+                            .into(),
                     )
                     .unwrap();
                     println!("wat {:?}", db);
@@ -143,10 +147,7 @@ async fn handle_connection(
                         if let Some(this_user) = db.users.iter_mut().find(|x| x.id == user_id) {
                             this_user.queue.push(track.clone());
                         } else if let Some(djs) = &mut db.djs {
-                            let this_dj = iter::once(&mut djs.current)
-                                .chain(djs.before.iter_mut())
-                                .chain(djs.after.iter_mut())
-                                .find(|x| x.id == user_id);
+                            let this_dj = djs.iter_mut().find(|x| x.id == user_id);
 
                             if let Some(dj) = this_dj {
                                 dj.queue.push(track.clone());
@@ -172,10 +173,7 @@ async fn handle_connection(
                         if let Some(this_user) = db.users.iter_mut().find(|x| x.id == user_id) {
                             this_user.queue.retain(|x| x.id != track_id);
                         } else if let Some(djs) = &mut db.djs {
-                            let this_dj = iter::once(&mut djs.current)
-                                .chain(djs.before.iter_mut())
-                                .chain(djs.after.iter_mut())
-                                .find(|x| x.id == user_id);
+                            let this_dj = djs.iter_mut().find(|x| x.id == user_id);
 
                             if let Some(dj) = this_dj {
                                 dj.queue.retain(|x| x.id != track_id);
@@ -259,8 +257,6 @@ fn start_playing_if_theres_a_dj(db_wrap: RoomDb, peers: PeerMap) {
 }
 
 fn prune_djs_without_queue(room: &mut Room) {
-    println!("pruning! {:?}", room);
-
     if let Some(djs) = &mut room.djs {
         let mut djs_without_queue = djs
             .before
@@ -288,12 +284,12 @@ fn prune_djs_without_queue(room: &mut Room) {
             }
         }
     };
-
-    println!("pruned! {:?}", room);
 }
 
 fn next_djs(djs: &mut Zipper<User>) {
-    if djs.after.len() == 0 {
+    if djs.before.len() == 0 && djs.after.len() == 0 {
+        ()
+    } else if djs.after.len() == 0 {
         let next = djs.before.remove(0);
         djs.after = djs.before.drain(..).collect();
         djs.after.push(djs.current.clone());

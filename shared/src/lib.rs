@@ -1,6 +1,7 @@
 pub mod lib {
     use serde::{Deserialize, Serialize};
-    use std::{time::SystemTime};
+    use std::{time::SystemTime, iter, vec::IntoIter, slice::{IterMut, Iter}};
+    use iter::{Once, Chain};
 
     // TODO: Display name and avatar
     #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -35,6 +36,23 @@ pub mod lib {
     impl<T> Zipper<T> {
         pub fn len(&self) -> usize {
             self.before.len() + self.after.len() + 1
+        }
+
+        pub fn iter<'a>(&'a self) -> Chain<Chain<Iter<'a, T>, Once<&T>>, Iter<'a, T>> {
+            self.before.iter().chain(iter::once(&self.current)).chain(self.after.iter())
+        }
+
+        pub fn iter_mut<'a>(&mut self) -> Chain<Chain<IterMut<T>, Once<&mut T>>, IterMut<T>> {
+            self.before.iter_mut().chain(iter::once(&mut self.current)).chain(self.after.iter_mut())
+        }
+    }
+
+    impl<T> IntoIterator for Zipper<T> {
+        type Item = T;
+        type IntoIter = Chain<Chain<IntoIter<T>, Once<T>>, IntoIter<T>>;
+
+        fn into_iter(self) -> Self::IntoIter {
+            self.before.into_iter().chain(iter::once(self.current)).chain(self.after.into_iter())
         }
     }
 
