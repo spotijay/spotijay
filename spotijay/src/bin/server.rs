@@ -14,7 +14,7 @@ use futures::{
 
 use async_std::net::{TcpListener, TcpStream};
 use async_std::task;
-use std::{iter, time::Duration};
+use std::time::Duration;
 use tungstenite::protocol::Message;
 
 use shared::lib::{now, Input, Output, Playing, Room, Track, User, Zipper};
@@ -116,11 +116,7 @@ async fn handle_connection(
                                 if let Some(djs) = &mut db.djs {
                                     djs.after.push(user);
                                 } else {
-                                    db.djs = Some(Zipper {
-                                        before: Vec::new(),
-                                        after: Vec::new(),
-                                        current: user,
-                                    })
+                                    db.djs = Some(Zipper::singleton(user))
                                 }
                             }
                         }
@@ -137,7 +133,7 @@ async fn handle_connection(
                             .unwrap();
                     }
                 }
-                Input::UnbecomeDj(user_id) => {
+                Input::UnbecomeDj(_user_id) => {
                     unimplemented!();
                 }
                 Input::AddTrack(user_id, track) => {
@@ -388,27 +384,23 @@ async fn run() -> Result<(), IoError> {
                 },
             ],
         }],
-        djs: Some(Zipper {
-            before: vec![],
-            after: vec![],
-            current: User {
-                id: "othertestuser".into(),
-                queue: vec![
-                    Track {
-                        id: "786".into(),
-                        uri: "spotify:track:7qLJdsmsNsMpUpqoTj7g9p".into(),
-                        duration_ms: 17000,
-                        name: "(---) Pt. 1".into(),
-                    },
-                    Track {
-                        id: "657".into(),
-                        uri: "spotify:track:3KkXRkHbMCARz0aVfEt68P".into(),
-                        duration_ms: 150000,
-                        name: "Sunflower".into(),
-                    },
-                ],
-            },
-        }),
+        djs: Some(Zipper::singleton(User {
+            id: "othertestuser".into(),
+            queue: vec![
+                Track {
+                    id: "786".into(),
+                    uri: "spotify:track:7qLJdsmsNsMpUpqoTj7g9p".into(),
+                    duration_ms: 17000,
+                    name: "(---) Pt. 1".into(),
+                },
+                Track {
+                    id: "657".into(),
+                    uri: "spotify:track:3KkXRkHbMCARz0aVfEt68P".into(),
+                    duration_ms: 150000,
+                    name: "Sunflower".into(),
+                },
+            ],
+        })),
         playing: None,
         next_up: None,
     };

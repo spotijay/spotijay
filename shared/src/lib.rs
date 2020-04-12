@@ -1,13 +1,18 @@
 pub mod lib {
+    use iter::{Chain, Once};
     use serde::{Deserialize, Serialize};
-    use std::{time::SystemTime, iter, vec::IntoIter, slice::{IterMut, Iter}};
-    use iter::{Once, Chain};
+    use std::{
+        iter,
+        slice::{Iter, IterMut},
+        time::SystemTime,
+        vec::IntoIter,
+    };
 
     // TODO: Display name and avatar
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub struct User {
         pub id: String,
-        pub queue: Vec<Track>
+        pub queue: Vec<Track>,
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -30,20 +35,34 @@ pub mod lib {
     pub struct Zipper<T> {
         pub before: Vec<T>,
         pub current: T,
-        pub after: Vec<T>
+        pub after: Vec<T>,
     }
 
     impl<T> Zipper<T> {
+        pub fn singleton(item: T) -> Zipper<T> {
+            Zipper {
+                before: vec![],
+                after: vec![],
+                current: item,
+            }
+        }
+
         pub fn len(&self) -> usize {
             self.before.len() + self.after.len() + 1
         }
 
         pub fn iter<'a>(&'a self) -> Chain<Chain<Iter<'a, T>, Once<&T>>, Iter<'a, T>> {
-            self.before.iter().chain(iter::once(&self.current)).chain(self.after.iter())
+            self.before
+                .iter()
+                .chain(iter::once(&self.current))
+                .chain(self.after.iter())
         }
 
         pub fn iter_mut<'a>(&mut self) -> Chain<Chain<IterMut<T>, Once<&mut T>>, IterMut<T>> {
-            self.before.iter_mut().chain(iter::once(&mut self.current)).chain(self.after.iter_mut())
+            self.before
+                .iter_mut()
+                .chain(iter::once(&mut self.current))
+                .chain(self.after.iter_mut())
         }
     }
 
@@ -52,7 +71,10 @@ pub mod lib {
         type IntoIter = Chain<Chain<IntoIter<T>, Once<T>>, IntoIter<T>>;
 
         fn into_iter(self) -> Self::IntoIter {
-            self.before.into_iter().chain(iter::once(self.current)).chain(self.after.into_iter())
+            self.before
+                .into_iter()
+                .chain(iter::once(self.current))
+                .chain(self.after.into_iter())
         }
     }
 
