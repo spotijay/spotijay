@@ -5,7 +5,7 @@ use rspotify::blocking::{
     util::get_token,
 };
 use rspotify::model::offset::for_position;
-use shared::lib::{now, Input, Output, Room, Track};
+use shared::lib::{now, Input, Output, Room};
 use std::sync::{Arc, Mutex};
 use tungstenite::{connect, Message};
 use url::Url;
@@ -121,7 +121,6 @@ fn main() {
             Output::NextTrackQueued(track) => {
                 block_on(queue_song(track.uri));
             }
-            _ => (),
         }
     }
 }
