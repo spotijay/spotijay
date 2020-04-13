@@ -1,13 +1,14 @@
 use js_sys::Function;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
-use std::iter;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, WebSocket};
 
 use shared::lib::{Input, Output, Room, Track, User};
 
+mod pages;
 mod spotify;
+use pages::Page;
 
 const WS_URL: &str = "ws://127.0.0.1:3012/";
 
@@ -15,27 +16,6 @@ const SPOTIFY_PROFILE_URL: &str = "https://api.spotify.com/v1/me";
 const SPOTIFY_PLAY_URL: &str = "https://api.spotify.com/v1/me/player/play";
 const SPOTIFY_QUEUE_URL: &str = "https://api.spotify.com/v1/me/player/queue";
 const SPOTIFY_SEARCH_URL: &str = "https://api.spotify.com/v1/search";
-
-#[derive(Debug, Clone, PartialEq)]
-enum Page {
-    Home,
-    Callback,
-}
-
-impl Page {
-    fn path(&self) -> Vec<&str> {
-        match self {
-            Page::Home => vec![],
-            Page::Callback => vec!["callback"],
-        }
-    }
-}
-
-impl From<Page> for Url {
-    fn from(page: Page) -> Self {
-        page.path().into()
-    }
-}
 
 #[derive(Debug)]
 struct Model {
@@ -468,7 +448,7 @@ fn authed_update(
     }
 }
 
-fn current_user(user_id: String, room: Room) -> Option<User> {
+fn current_user(user_id: &str, room: &Room) -> Option<User> {
     if let Some(djs) = &room.djs {
         djs.iter()
             .chain(room.users.iter())
@@ -492,9 +472,12 @@ fn users_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
 fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let mut items: Vec<Node<Msg>> = Vec::new();
 
-    let tracks = current_user(authed_model.profile.clone()?.id, authed_model.room.clone()?)?
-        .queue
-        .into_iter();
+    let tracks = current_user(
+        authed_model.profile.as_ref().map(|x| x.id.as_ref())?,
+        authed_model.room.as_ref()?,
+    )?
+    .queue
+    .into_iter();
 
     for track in tracks {
         let event_track = track.clone();
@@ -548,7 +531,10 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
             ]]);
         }
 
-        if djs.iter().any(|x| x.id != authed_model.profile.clone().unwrap().id) {
+        if djs
+            .iter()
+            .any(|x| x.id != authed_model.profile.clone().unwrap().id)
+        {
             items.push(li![button![
                 simple_ev(Ev::Click, Msg::BecomeDj),
                 "Become a DJ"
@@ -618,15 +604,12 @@ fn view(model: &Model) -> impl View<Msg> {
 }
 
 fn routes(url: Url) -> Option<Msg> {
-    let parsed_page = match url.path[0].as_ref() {
-        "callback" => Page::Callback,
-        _ => Page::Home,
-    };
+    let parsed_page = Page::from_url(url);
 
-    if parsed_page == Page::Callback {
+    if parsed_page == Some(Page::Callback) {
         Some(Msg::LoggedIn)
     } else {
-        Some(Msg::ChangePage(parsed_page))
+        parsed_page.map(Msg::ChangePage)
     }
 }
 
