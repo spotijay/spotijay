@@ -3,6 +3,8 @@ name = "webclient"
 version = "0.1.0"
 authors = ["Håkon H. Lerring <hakon@lerring.no>"]
 edition = "2018"
+description = "WASM frontend client for Spotijay"
+repository = "https://github.com/Hakon/spotijay"
 
 [lib]
 crate-type = ["cdylib"]
