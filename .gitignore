@@ -1,4 +1,5 @@
 .env
+.DS_Store
 .spotify_token_cache.json
 /target
 db.sqlite
