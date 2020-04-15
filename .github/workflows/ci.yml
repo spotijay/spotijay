@@ -10,12 +10,16 @@ jobs:
     - name: Install rust
       uses: actions-rs/toolchain@v1
       with:
+        profile: minimal
         toolchain: stable
+        override: true
     - name: Install cargo-make
       uses: actions-rs/cargo@v1
       with:
         command: install
         args: --debug cargo-make
+      env:
+        CLIENT_ID: ${{ secrets.CLIENT_ID }}
     - name: Run CI
       uses: actions-rs/cargo@v1
       with:
