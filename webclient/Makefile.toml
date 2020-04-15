@@ -11,11 +11,17 @@ install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V
 command = "wasm-pack"
 args = ["build", "--no-typescript", "--target", "web", "--out-name", "package", "--dev"]
 
-[tasks.build_release]
+[tasks.build-release]
 description = "Build with wasm-pack --release"
 install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V" }
 command = "wasm-pack"
 args = ["build", "--no-typescript", "--target", "web", "--out-name", "package", "--release"]
+
+[tasks.test]
+description = "Run tests."
+install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V", min_version = "0.8.0" }
+command = "wasm-pack"
+args = ["test", "--node"]
 
 [tasks.serve]
 description = "Start server"
