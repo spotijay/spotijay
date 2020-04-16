@@ -367,40 +367,8 @@ async fn run() -> Result<(), IoError> {
     // In memory DB to begin with.
     let room = Room {
         id: "the_room".into(),
-        users: vec![User {
-            id: "dropduck".into(),
-            queue: vec![
-                Track {
-                    id: "123".into(),
-                    uri: "spotify:track:2jLVXSoCCuUDD6HUU6CaY5".into(),
-                    duration_ms: 17000,
-                    name: "New earlsweatshirt - Interlude".into(),
-                },
-                Track {
-                    id: "456".into(),
-                    uri: "spotify:track:3b0Voi6WMkuyX7EVa6QKgA".into(),
-                    duration_ms: 150000,
-                    name: "Brand New Tyga - Interlude".into(),
-                },
-            ],
-        }],
-        djs: Some(Zipper::singleton(User {
-            id: "othertestuser".into(),
-            queue: vec![
-                Track {
-                    id: "786".into(),
-                    uri: "spotify:track:7qLJdsmsNsMpUpqoTj7g9p".into(),
-                    duration_ms: 17000,
-                    name: "(---) Pt. 1".into(),
-                },
-                Track {
-                    id: "657".into(),
-                    uri: "spotify:track:3KkXRkHbMCARz0aVfEt68P".into(),
-                    duration_ms: 150000,
-                    name: "Sunflower".into(),
-                },
-            ],
-        })),
+        users: vec![],
+        djs: None,
         playing: None,
         next_up: None,
     };
