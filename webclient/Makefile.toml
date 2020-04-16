@@ -54,5 +54,5 @@ args = ["--port", "${PORT}"]
 
 [tasks.watch]
 description = "Build, create wasms, and watch/recompile files for changes"
-dependencies = ["build", "create_wasm"]
+dependencies = ["build"]
 watch = { ignore_pattern="pkg/*" }
