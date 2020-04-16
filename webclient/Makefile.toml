@@ -1,9 +1,10 @@
-[env]
-PORT = "8000"
-
 [tasks.default]
 description = "Build wasm"
 dependencies = ["build"]
+
+[tasks.post-ci-flow]
+description = "Post ci-flow"
+dependencies = ["copy-to-site-dir"]
 
 [tasks.build]
 description = "Build with wasm-pack"
@@ -17,11 +18,33 @@ install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V
 command = "wasm-pack"
 args = ["build", "--no-typescript", "--target", "web", "--out-name", "package", "--release"]
 
+[tasks.copy-to-site-dir]
+description = "Copy HTML, JS and WASM to site dir for deploy"
+script_runner = "@rust"
+script = [
+'''
+use std::fs;
+fn main() -> std::io::Result<()> {
+    fs::create_dir_all("site")?;
+    fs::copy("index.html", "site/index.html")?;
+    fs::copy("pkg/package.js", "site/package.js")?;
+    fs::copy("pkg/package_bg.wasm", "site/package_bg.wasm")?;
+    Ok(())
+}
+'''
+]
+
 [tasks.test]
-description = "Run tests."
+description = "Run tests"
 install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V", min_version = "0.8.0" }
 command = "wasm-pack"
 args = ["test", "--node"]
+
+[tasks.test-release]
+description = "Run tests with release binary"
+install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V", min_version = "0.8.0" }
+command = "wasm-pack"
+args = ["test", "--node", "--release"]
 
 [tasks.serve]
 description = "Start server"
