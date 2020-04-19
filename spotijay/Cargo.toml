@@ -30,3 +30,4 @@ futures-timer = "3.0.2"
 dotenv = "0.15.0"
 async-tls = "0.7.0"
 rustls = "0.17.0"
+openssl = { version = "0.10", features = ["vendored"] }
