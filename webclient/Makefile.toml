@@ -2,10 +2,6 @@
 description = "Build wasm"
 dependencies = ["build"]
 
-[tasks.post-ci-flow]
-description = "Post ci-flow"
-dependencies = ["copy-to-site-dir"]
-
 [tasks.build]
 description = "Build with wasm-pack"
 install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V" }
@@ -13,8 +9,10 @@ command = "wasm-pack"
 args = ["build", "--no-typescript", "--target", "web", "--out-name", "package", "--dev"]
 
 [tasks.build-release]
+dependencies = ["build-release-task", "copy-to-site-dir"]
+
+[tasks.build-release-task]
 description = "Build with wasm-pack --release"
-dependencies = ["copy-to-site-dir"]
 install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "-V" }
 command = "wasm-pack"
 args = ["build", "--no-typescript", "--target", "web", "--out-name", "package", "--release"]
