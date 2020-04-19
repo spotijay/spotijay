@@ -32,10 +32,17 @@ jobs:
         toolchain: stable
         override: true
     - uses: davidB/rust-cargo-make@v1
-    - name: Run CI
+    - name: Build Webclient
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
       with:
         command: make
         args: build-release
+    - name: Build server
+      uses: actions-rs/cargo@v1
+      env:
+        CLIENT_ID: ${{ secrets.CLIENT_ID }}
+      with:
+        command: build
+        args: --release --bin server
