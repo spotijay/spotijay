@@ -11,4 +11,4 @@ The webclient is a bit more complicated to get going as it uses wasm-pack and mi
 Install `cargo-make`  
 Build the webclient with: `cargo make watch`  
 Run tests with: `cargo make test`  
-Run microserver with: `cargo make serve`  
+Run microserver with: `cargo make serve`
