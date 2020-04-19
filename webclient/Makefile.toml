@@ -25,10 +25,10 @@ script = [
 '''
 use std::fs;
 fn main() -> std::io::Result<()> {
-    fs::create_dir_all("site")?;
+    fs::create_dir_all("site/pkg")?;
     fs::copy("index.html", "site/index.html")?;
-    fs::copy("pkg/package.js", "site/package.js")?;
-    fs::copy("pkg/package_bg.wasm", "site/package_bg.wasm")?;
+    fs::copy("pkg/package.js", "site/pkg/package.js")?;
+    fs::copy("pkg/package_bg.wasm", "site/pkg/package_bg.wasm")?;
     Ok(())
 }
 '''

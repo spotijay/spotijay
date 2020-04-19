@@ -39,9 +39,18 @@ jobs:
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
+        SERVER_URL: spotijay.lerring.no
+        REDIRECT_URI: https://spotijay.github.io/callback
       with:
         command: make
         args: build-release
+    - name: Deploy webclient
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        deploy_key: ${{ secrets.ACTIONS_DEPLOY_KEY }}
+        external_repository: spotijay/spotijay.github.io
+        publish_branch: master
+        publish_dir: ./webclient/site
     - name: Build server
       uses: actions-rs/cargo@v1
       env:
