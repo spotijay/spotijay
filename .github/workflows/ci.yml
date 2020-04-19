@@ -22,7 +22,8 @@ jobs:
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
     - name: Checkout
       uses: actions/checkout@v2
-      
+    - name: Touch env file
+      run: touch .env
     - name: Install rust
       uses: actions-rs/toolchain@v1
       with:
