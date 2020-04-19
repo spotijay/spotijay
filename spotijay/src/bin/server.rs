@@ -1,7 +1,10 @@
+use std::time::Duration;
 use std::{
     collections::HashMap,
-    io::Error as IoError,
+    fs::File,
+    io::{self, BufReader, Error as IoError},
     net::SocketAddr,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -14,8 +17,10 @@ use futures::{
 
 use async_std::net::{TcpListener, TcpStream};
 use async_std::task;
-use std::time::Duration;
+use async_tls::TlsAcceptor;
 use tungstenite::protocol::Message;
+
+use rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, internal::pemfile::{certs, rsa_private_keys}};
 
 use shared::lib::{now, Input, Output, Playing, Room, Track, User, Zipper};
 
@@ -32,14 +37,22 @@ async fn handle_connection(
     peers_wrap: PeerMap,
     db_wrap: RoomDb,
     raw_stream: TcpStream,
+    acceptor: &Option<TlsAcceptor>,
     addr: SocketAddr,
 ) {
     println!("Incoming TCP connection from: {}", addr);
 
-    let ws_stream = async_tungstenite::accept_async(raw_stream)
+    let stream = if let Some(acceptor) = acceptor {
+        let tls_stream = acceptor.accept(raw_stream).await.unwrap();
+
+        async_tungstenite::stream::Stream::Tls(tls_stream)
+    } else {
+        async_tungstenite::stream::Stream::Plain(raw_stream)
+    };
+
+    let ws_stream = async_tungstenite::accept_async(stream)
         .await
         .expect("Error during the websocket handshake occurred");
-    println!("WebSocket connection established: {}", addr);
 
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
@@ -361,6 +374,16 @@ fn play(db_wrap: RoomDb, peers: PeerMap, track: Track) -> () {
     });
 }
 
+fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
+    certs(&mut BufReader::new(File::open(path)?))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
+}
+
+fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
+    rsa_private_keys(&mut BufReader::new(File::open(path)?))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
+}
+
 async fn run() -> Result<(), IoError> {
     env_logger::init();
 
@@ -377,16 +400,35 @@ async fn run() -> Result<(), IoError> {
 
     let peers = PeerMap::new(Mutex::new(HashMap::new()));
 
-    // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind("127.0.0.1:3012").await;
+    let mut config = ServerConfig::new(NoClientAuth::new());
+
+    let ssl_cert = dotenv::var("SSL_CERT");
+    let ssl_key = dotenv::var("SSL_KEY");
+
+    let acceptor = if ssl_cert.is_ok() && ssl_key.is_ok() {
+        let certs = load_certs(Path::new(&ssl_cert.unwrap())).unwrap();
+        let mut keys = load_keys(Path::new(&ssl_key.unwrap())).unwrap();
+        config.set_single_cert(certs, keys.remove(0)).unwrap();
+
+        Some(TlsAcceptor::from(Arc::new(config)))
+    } else {
+        None
+    };
+
+    let url = dotenv::var("SERVER_URL").unwrap();
+    let try_socket = TcpListener::bind(&url).await;
     let listener = try_socket.expect("Failed to bind");
-    println!("Listening on: 127.0.0.1:3012");
+    println!("Listening on: {}", &url);
 
     start_playing_if_theres_a_dj(db.clone(), peers.clone());
 
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
-        task::spawn(handle_connection(peers.clone(), db.clone(), stream, addr));
+        let db = db.clone();
+        let peers = peers.clone();
+        let acceptor = acceptor.clone();
+
+        task::spawn(async move { handle_connection(peers, db, stream, &acceptor, addr).await });
     }
 
     Ok(())

@@ -10,7 +10,7 @@ mod pages;
 mod spotify;
 use pages::Page;
 
-const WS_URL: &str = "ws://127.0.0.1:3012/";
+const WS_URL: &str = dotenv_codegen::dotenv!("SERVER_WS_URL");
 
 const SPOTIFY_PROFILE_URL: &str = "https://api.spotify.com/v1/me";
 const SPOTIFY_PLAY_URL: &str = "https://api.spotify.com/v1/me/player/play";
