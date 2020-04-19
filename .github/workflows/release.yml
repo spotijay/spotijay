@@ -39,8 +39,8 @@ jobs:
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
-        SERVER_URL: spotijay.lerring.no
         REDIRECT_URI: https://spotijay.github.io/callback
+        SERVER_WS_URL: ws://spotijay.lerring.no:8473/
       with:
         command: make
         args: build-release
