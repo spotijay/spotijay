@@ -25,6 +25,11 @@ jobs:
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+    - name: Cache cargo bin
+      uses: actions/cache@v1
+      with:
+        path: ~/.cargo/bin
+        key: ${{ runner.os }}-cargo-bin-${{ hashFiles('**/Cargo.lock') }}
     - name: Touch env file
       run: touch .env
     - run: sudo apt-get install -y libsqlite3-dev libssl-dev
@@ -35,13 +40,17 @@ jobs:
         toolchain: stable
         override: true
     - uses: davidB/rust-cargo-make@v1
+    - uses: actions-rs/install@v0.1
+        with:
+          crate: wasm-pack
+          version: latest
     - name: Build release for main project and webclient
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
         REDIRECT_URI: https://spotijay.github.io/callback
         SERVER_URL: spotijay.lerring.no:8473
-        SERVER_WS_URL: ws://spotijay.lerring.no:8473/
+        SERVER_WS_URL: wss://spotijay.lerring.no:8473/
       with:
         command: make
         args: build-release
