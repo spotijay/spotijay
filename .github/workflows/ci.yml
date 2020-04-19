@@ -18,10 +18,10 @@ jobs:
       with:
         command: install
         args: --debug cargo-make
-      env:
-        CLIENT_ID: ${{ secrets.CLIENT_ID }}
     - name: Run CI
       uses: actions-rs/cargo@v1
+      env:
+        CLIENT_ID: ${{ secrets.CLIENT_ID }}
       with:
         command: make
         args: build-release
