@@ -35,11 +35,12 @@ jobs:
         toolchain: stable
         override: true
     - uses: davidB/rust-cargo-make@v1
-    - name: Build Webclient
+    - name: Build release for main project and webclient
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
         REDIRECT_URI: https://spotijay.github.io/callback
+        SERVER_URL: spotijay.lerring.no:8473
         SERVER_WS_URL: ws://spotijay.lerring.no:8473/
       with:
         command: make
@@ -51,13 +52,6 @@ jobs:
         external_repository: spotijay/spotijay.github.io
         publish_branch: master
         publish_dir: ./webclient/site
-    - name: Build server
-      uses: actions-rs/cargo@v1
-      env:
-        CLIENT_ID: ${{ secrets.CLIENT_ID }}
-      with:
-        command: build
-        args: --release --bin server
     - name: Create Release
       id: create_release
       uses: actions/create-release@v1
