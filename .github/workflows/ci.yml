@@ -24,7 +24,7 @@ jobs:
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
     - name: Touch env file
       run: touch .env
-    - run: apt-get install -y libsqlite3-dev libssl-dev
+    - run: sudo apt-get install -y libsqlite3-dev libssl-dev
     - name: Install rust
       uses: actions-rs/toolchain@v1
       with:
