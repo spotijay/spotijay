@@ -41,9 +41,9 @@ jobs:
         override: true
     - uses: davidB/rust-cargo-make@v1
     - uses: actions-rs/install@v0.1
-        with:
-          crate: wasm-pack
-          version: latest
+      with:
+        crate: wasm-pack
+        version: latest
     - name: Build release for main project and webclient
       uses: actions-rs/cargo@v1
       env:
