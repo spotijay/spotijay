@@ -1,8 +1,5 @@
-name: Release
-on:
-  push:
-    tags:
-      - 'v*'
+name: CI
+on: [push, pull_request]
 jobs:
   ci:
     name: Build release
@@ -38,8 +35,6 @@ jobs:
         key: ${{ runner.os }}-cargo-bin-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-bin-
-    - name: Touch env file
-      run: touch .env
     - run: sudo apt-get install -y libsqlite3-dev libssl-dev
     - name: Install rust
       uses: actions-rs/toolchain@v1
@@ -48,7 +43,7 @@ jobs:
         toolchain: stable
         override: true
     - uses: davidB/rust-cargo-make@v1
-    - name: Build release for main project and webclient
+    - name: Build main project and webclient
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -57,31 +52,9 @@ jobs:
         SERVER_WS_URL: wss://spotijay.lerring.no:8473/
       with:
         command: make
-        args: build-release
-    - name: Deploy webclient
-      uses: peaceiris/actions-gh-pages@v3
+        args: build
+    - name: Test all projects
+      uses: actions-rs/cargo@v1
       with:
-        deploy_key: ${{ secrets.ACTIONS_DEPLOY_KEY }}
-        external_repository: spotijay/spotijay.github.io
-        publish_branch: master
-        publish_dir: ./webclient/site
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-    - name: Upload Release Asset
-      id: upload-release-asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./target/release/server
-        asset_name: server
-        asset_content_type: application/octet-stream
+        command: make
+        args: test
