@@ -9,13 +9,13 @@ pub mod lib {
     };
 
     // TODO: Display name and avatar
-    #[derive(Debug, Clone, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct User {
         pub id: String,
         pub queue: Vec<Track>,
     }
 
-    #[derive(Debug, Clone, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct Track {
         pub id: String,
         pub name: String,
@@ -23,15 +23,16 @@ pub mod lib {
         pub duration_ms: u32,
     }
 
-    #[derive(Debug, Clone, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct Playing {
+        pub id: String,
         pub name: String,
         pub uri: String,
         pub duration_ms: u32,
         pub started: u64,
     }
 
-    #[derive(Debug, Clone, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct Zipper<T> {
         pub before: Vec<T>,
         pub current: T,
@@ -78,7 +79,7 @@ pub mod lib {
         }
     }
 
-    #[derive(Debug, Clone, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct Room {
         pub id: String,
         pub users: Vec<User>,

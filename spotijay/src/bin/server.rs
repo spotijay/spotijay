@@ -8,6 +8,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use shared::lib::{now, Input, Output, Playing, Room, Track, User, Zipper};
+
 use futures::{
     channel::mpsc::{unbounded, UnboundedSender},
     future, pin_mut,
@@ -20,13 +22,18 @@ use async_std::task;
 use async_tls::TlsAcceptor;
 use tungstenite::protocol::Message;
 
-use rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, internal::pemfile::{certs, rsa_private_keys}};
+use rustls::{
+    internal::pemfile::{certs, rsa_private_keys},
+    Certificate, NoClientAuth, PrivateKey, ServerConfig,
+};
 
-use shared::lib::{now, Input, Output, Playing, Room, Track, User, Zipper};
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{self, params, OptionalExtension};
 
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
-type RoomDb = Arc<Mutex<Room>>;
+type Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
+type Connection = r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>;
 
 struct Peer {
     pub tx: Tx,
@@ -35,10 +42,10 @@ struct Peer {
 
 async fn handle_connection(
     peers_wrap: PeerMap,
-    db_wrap: RoomDb,
     raw_stream: TcpStream,
     acceptor: &Option<TlsAcceptor>,
     addr: SocketAddr,
+    pool: Pool,
 ) {
     println!("Incoming TCP connection from: {}", addr);
 
@@ -70,6 +77,8 @@ async fn handle_connection(
         let input: Result<Input, serde_json::Error> = serde_json::from_str(msg.to_text().unwrap());
         println!("Received a message from {}: {:?}", addr, input);
 
+        let conn = pool.get().unwrap();
+
         if let Err(e) = input {
             println!(
                 "Couldn't deserialize: {:?}, serde error: {:?}",
@@ -81,67 +90,63 @@ async fn handle_connection(
                 Input::Authenticate(user_id) => {
                     peers_wrap.lock().unwrap().get_mut(&addr).unwrap().user_id = Some(user_id);
 
-                    // Send complete room state.
-                    tx.unbounded_send(
-                        serde_json::to_string_pretty(&Output::RoomState(
-                            db_wrap.lock().unwrap().clone(),
-                        ))
-                        .unwrap()
-                        .into(),
-                    )
-                    .unwrap();
+                    let serialized = serde_json::to_string_pretty(&Output::RoomState(
+                        get_room("the_room", &conn).unwrap().unwrap(),
+                    ));
+
+                    tx.unbounded_send(serialized.unwrap().into()).unwrap();
                 }
                 Input::JoinRoom(user) => {
-                    let mut db = db_wrap.lock().unwrap();
+                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
-                    // Just one room for now.
-                    if !db.users.iter().any(|x| x.id == user.id) {
-                        if let Some(djs) = db.djs.clone() {
+                    if !room.users.iter().any(|x| x.id == user.id) {
+                        if let Some(djs) = &room.djs {
                             if !djs.iter().any(|x| x.id == user.id) {
-                                db.users.push(user.clone());
+                                room.users.push(user.clone());
                             }
                         } else {
-                            db.users.push(user.clone());
+                            room.users.push(user.clone());
                         }
                     }
 
-                    // Send complete room state.
+                    update_room(room.clone(), &conn).unwrap();
+
                     tx.unbounded_send(
-                        serde_json::to_string_pretty(&Output::RoomState(db.clone()))
+                        serde_json::to_string_pretty(&Output::RoomState(room))
                             .unwrap()
                             .into(),
                     )
                     .unwrap();
-                    println!("wat {:?}", db);
                 }
                 Input::BecomeDj(user_id) => {
-                    {
-                        let mut db = db_wrap.lock().unwrap();
+                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
-                        let user = db.users.iter().find(|x| x.id == user_id);
+                    let user = room.users.iter().find(|x| x.id == user_id);
 
-                        if let Some(user) = user {
-                            let user = user.clone();
+                    if let Some(user) = user {
+                        let user = user.clone();
 
-                            if user.queue.len() > 0 {
-                                db.users.retain(|x| x.id != user_id);
+                        if user.queue.len() > 0 {
+                            room.users.retain(|x| x.id != user_id);
 
-                                if let Some(djs) = &mut db.djs {
-                                    djs.after.push(user);
-                                } else {
-                                    db.djs = Some(Zipper::singleton(user))
-                                }
+                            if let Some(djs) = &mut room.djs {
+                                djs.after.push(user);
+                            } else {
+                                room.djs = Some(Zipper::singleton(user))
                             }
                         }
                     }
 
-                    start_playing_if_theres_a_dj(db_wrap.clone(), peers_wrap.clone());
+                    update_room(room, &conn).unwrap();
+
+                    start_playing_if_theres_a_dj(&pool, peers_wrap.clone());
 
                     let peers = peers_wrap.lock().unwrap();
                     let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                     for recp in recipients {
-                        let output = Output::RoomState(db_wrap.lock().unwrap().clone());
+                        let output =
+                            Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
                         recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
                             .unwrap();
                     }
@@ -150,57 +155,57 @@ async fn handle_connection(
                     unimplemented!();
                 }
                 Input::AddTrack(user_id, track) => {
-                    {
-                        let mut db = db_wrap.lock().unwrap();
+                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
-                        if let Some(this_user) = db.users.iter_mut().find(|x| x.id == user_id) {
-                            this_user.queue.push(track.clone());
-                        } else if let Some(djs) = &mut db.djs {
-                            let this_dj = djs.iter_mut().find(|x| x.id == user_id);
+                    if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
+                        this_user.queue.push(track.clone());
+                    } else if let Some(djs) = &mut room.djs {
+                        let this_dj = djs.iter_mut().find(|x| x.id == user_id);
 
-                            if let Some(dj) = this_dj {
-                                dj.queue.push(track.clone());
-                            }
+                        if let Some(dj) = this_dj {
+                            dj.queue.push(track.clone());
                         }
                     }
 
-                    start_playing_if_theres_a_dj(db_wrap.clone(), peers_wrap.clone());
+                    update_room(room, &conn).unwrap();
+
+                    start_playing_if_theres_a_dj(&pool, peers_wrap.clone());
 
                     let peers = peers_wrap.lock().unwrap();
                     let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                     for recp in recipients {
-                        let output = Output::RoomState(db_wrap.lock().unwrap().clone());
+                        let output =
+                            Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
                         recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
                             .unwrap();
                     }
                 }
                 Input::RemoveTrack(user_id, track_id) => {
-                    {
-                        let mut db = db_wrap.lock().unwrap();
+                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
-                        if let Some(this_user) = db.users.iter_mut().find(|x| x.id == user_id) {
-                            this_user.queue.retain(|x| x.id != track_id);
-                        } else if let Some(djs) = &mut db.djs {
-                            let this_dj = djs.iter_mut().find(|x| x.id == user_id);
+                    if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
+                        this_user.queue.retain(|x| x.id != track_id);
+                    } else if let Some(djs) = &mut room.djs {
+                        let this_dj = djs.iter_mut().find(|x| x.id == user_id);
 
-                            if let Some(dj) = this_dj {
-                                dj.queue.retain(|x| x.id != track_id);
-                            }
+                        if let Some(dj) = this_dj {
+                            dj.queue.retain(|x| x.id != track_id);
                         }
                     }
 
-                    {
-                        prune_djs_without_queue(&mut db_wrap.lock().unwrap());
-                    }
+                    prune_djs_without_queue(&mut room);
 
-                    start_playing_if_theres_a_dj(db_wrap.clone(), peers_wrap.clone());
+                    update_room(room, &conn).unwrap();
+
+                    start_playing_if_theres_a_dj(&pool, peers_wrap.clone());
 
                     let peers = peers_wrap.lock().unwrap();
                     let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                     for recp in recipients {
-                        let output = Output::RoomState(db_wrap.lock().unwrap().clone());
+                        let output =
+                            Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
                         recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
                             .unwrap();
                     }
@@ -220,6 +225,56 @@ async fn handle_connection(
     peers_wrap.lock().unwrap().remove(&addr);
 }
 
+fn get_room(room_id: &str, conn: &Connection) -> rusqlite::Result<Option<Room>> {
+    let mut stmt =
+        conn.prepare("SELECT id, users, playing, djs, next_up FROM room WHERE room.id = ?")?;
+    let res = stmt.query_row(params![room_id], |row| {
+        let id: String = row.get(0)?;
+        let users = serde_json::from_value(row.get(1)?).unwrap();
+        let playing = serde_json::from_value(row.get(2)?).unwrap();
+        let djs = serde_json::from_value(row.get(3)?).unwrap();
+        let next_up = serde_json::from_value(row.get(4)?).unwrap();
+
+        Ok(Room {
+            id: id,
+            users: users,
+            playing: playing,
+            djs: djs,
+            next_up: next_up,
+        })
+    });
+
+    res.optional()
+}
+
+fn update_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE room SET id = ?1, users = ?2, playing = ?3, djs = ?4, next_up = ?5",
+        params![
+            room.id,
+            serde_json::to_value(room.users).unwrap(),
+            serde_json::to_value(room.playing).unwrap(),
+            serde_json::to_value(room.djs).unwrap(),
+            serde_json::to_value(room.next_up).unwrap(),
+        ],
+    )
+    .map(|_| ())
+}
+
+fn _insert_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO room (id, users, playing, djs, next_up) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            room.id,
+            serde_json::to_value(room.users).unwrap(),
+            serde_json::to_value(room.playing).unwrap(),
+            serde_json::to_value(room.djs).unwrap(),
+            serde_json::to_value(room.next_up).unwrap(),
+        ],
+    )
+    .map(|_| ())
+}
+
 fn send_to_all(peers: PeerMap, data: &String) {
     let peers = peers.lock().unwrap();
     let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
@@ -229,12 +284,13 @@ fn send_to_all(peers: PeerMap, data: &String) {
     }
 }
 
-fn start_playing_if_theres_a_dj(db_wrap: RoomDb, peers: PeerMap) {
-    let play_new_track = {
-        let mut db = db_wrap.lock().unwrap();
+fn start_playing_if_theres_a_dj(pool: &Pool, peers: PeerMap) {
+    let conn = pool.get().unwrap();
+    let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
-        if let None = db.playing {
-            if let Some(djs) = &mut db.djs {
+    let play_new_track = {
+        if let None = room.playing {
+            if let Some(djs) = &mut room.djs {
                 if djs.current.queue.len() > 0 {
                     Some(djs.current.queue.remove(0))
                 } else {
@@ -248,10 +304,13 @@ fn start_playing_if_theres_a_dj(db_wrap: RoomDb, peers: PeerMap) {
         }
     };
 
+    update_room(room, &conn).unwrap();
+
     if let Some(track) = play_new_track {
-        play(db_wrap.clone(), peers.clone(), track.clone());
+        play(pool.clone(), peers.clone(), track.clone());
 
         let playing = Playing {
+            id: track.id.clone(),
             name: track.name.clone(),
             uri: track.uri.clone(),
             duration_ms: track.duration_ms.clone(),
@@ -310,65 +369,76 @@ fn next_djs(djs: &mut Zipper<User>) {
     }
 }
 
-fn play(db_wrap: RoomDb, peers: PeerMap, track: Track) -> () {
+fn play(pool: Pool, peers: PeerMap, track: Track) -> () {
     let playing = Playing {
+        id: track.id.clone(),
         name: track.name.clone(),
         uri: track.uri.clone(),
         duration_ms: track.duration_ms.clone(),
         started: now(),
     };
-    db_wrap.clone().lock().unwrap().playing = Some(playing);
+
+    let conn = pool.get().unwrap();
+    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+    room.playing = Some(playing);
+    update_room(room, &conn).unwrap();
     println!("Now playing: {:?}", track);
 
     let later_peers = peers.clone();
     let later_peers2 = peers.clone();
-    let later_db = db_wrap.clone();
-    let later_db2 = db_wrap.clone();
+    let later_pool = pool.clone();
+    let later_pool2 = pool.clone();
     task::spawn(async move {
         let playing_duration = Duration::from_millis(track.duration_ms as u64);
         let next_up_duration = Duration::from_millis(5000);
 
         async_std::task::sleep(playing_duration - next_up_duration).await;
 
-        let mut db = later_db.lock().unwrap();
+        let conn = later_pool.get().unwrap();
+        let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
-        if let Some(djs) = &mut db.djs {
+        if let Some(djs) = &mut room.djs {
             next_djs(djs);
 
             if djs.current.queue.len() > 0 {
-                db.next_up = Some(djs.current.queue.remove(0));
+                room.next_up = Some(djs.current.queue.remove(0));
             } else {
-                db.next_up = None;
+                room.next_up = None;
             }
         }
-        println!("Next up queued: {:?}", db.next_up);
+        println!("Next up queued: {:?}", room.next_up);
 
-        if let Some(next) = db.next_up.clone() {
+        if let Some(next) = room.next_up.clone() {
             send_to_all(
                 later_peers,
                 &serde_json::to_string_pretty(&Output::NextTrackQueued(next)).unwrap(),
             );
         }
 
+        update_room(room, &conn).unwrap();
+
         task::spawn(async move {
             async_std::task::sleep(Duration::from_millis(5000)).await;
 
-            let next_track_wrap = { later_db2.lock().unwrap().next_up.take() };
+            let conn = later_pool2.get().unwrap();
+            let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+            let next_track_wrap = { room.next_up.take() };
 
             if let Some(next_track) = next_track_wrap {
-                play(db_wrap, later_peers2.clone(), next_track);
+                play(later_pool, later_peers2.clone(), next_track);
             } else {
-                later_db2.lock().unwrap().playing = None;
+                room.playing = None;
             }
 
-            prune_djs_without_queue(&mut later_db2.lock().unwrap());
+            prune_djs_without_queue(&mut room);
+
+            update_room(room.clone(), &conn).unwrap();
 
             send_to_all(
                 later_peers2,
-                &serde_json::to_string_pretty(&Output::RoomState(
-                    later_db2.lock().unwrap().clone(),
-                ))
-                .unwrap(),
+                &serde_json::to_string_pretty(&Output::RoomState(room)).unwrap(),
             );
         });
     });
@@ -384,19 +454,24 @@ fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
 
+fn setup_db(mut conn: rusqlite::Connection) {
+    embedded::migrations::runner().run(&mut conn).unwrap();
+}
+
+mod embedded {
+    use refinery::embed_migrations;
+    embed_migrations!("migrations");
+}
+
 async fn run() -> Result<(), IoError> {
     env_logger::init();
 
-    // In memory DB to begin with.
-    let room = Room {
-        id: "the_room".into(),
-        users: vec![],
-        djs: None,
-        playing: None,
-        next_up: None,
-    };
+    let manager = SqliteConnectionManager::file("./db.sqlite");
+    //let manager = SqliteConnectionManager::memory();
+    let pool = r2d2::Pool::new(manager).unwrap();
 
-    let db = Arc::new(Mutex::new(room));
+    let migrate_conn = rusqlite::Connection::open("./db.sqlite").unwrap();
+    setup_db(migrate_conn);
 
     let peers = PeerMap::new(Mutex::new(HashMap::new()));
 
@@ -420,15 +495,15 @@ async fn run() -> Result<(), IoError> {
     let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", &url);
 
-    start_playing_if_theres_a_dj(db.clone(), peers.clone());
+    start_playing_if_theres_a_dj(&pool, peers.clone());
 
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
-        let db = db.clone();
         let peers = peers.clone();
         let acceptor = acceptor.clone();
+        let pool = pool.clone();
 
-        task::spawn(async move { handle_connection(peers, db, stream, &acceptor, addr).await });
+        task::spawn(async move { handle_connection(peers, stream, &acceptor, addr, pool).await });
     }
 
     Ok(())
@@ -436,4 +511,74 @@ async fn run() -> Result<(), IoError> {
 
 fn main() -> Result<(), IoError> {
     task::block_on(run())
+}
+
+#[cfg(test)]
+mod test {
+    use crate::*;
+
+    fn setup_test_db(
+        db_name: &str,
+    ) -> r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager> {
+        let path = &format!("file:{}?mode=memory&cache=shared", db_name);
+        let manager = SqliteConnectionManager::file(path);
+        let pool = r2d2::Pool::new(manager).unwrap();
+        let conn = pool.get().unwrap();
+
+        let migrate_conn = rusqlite::Connection::open(path).unwrap();
+
+        setup_db(migrate_conn);
+
+        conn
+    }
+
+    #[test]
+    fn test_insert_track() {
+        let conn = &setup_test_db("test_insert_track");
+
+        let test_track = Track {
+            id: "sa67saf64s".into(),
+            name: "Cool jazz stuff".into(),
+            uri: "spotify:track:sa67saf64s".into(),
+            duration_ms: 16345340,
+        };
+
+        let room = Room {
+            id: "test_room".into(),
+            users: Vec::new(),
+            djs: None,
+            playing: None,
+            next_up: Some(test_track),
+        };
+
+        let res = update_room(room, conn);
+
+        assert_eq!(res, Ok(()));
+    }
+
+    #[test]
+    fn test_get_room() {
+        let conn = &setup_test_db("test_get_room");
+
+        let test_track = Track {
+            id: "sa67saf64s".into(),
+            name: "Cool jazz stuff".into(),
+            uri: "spotify:track:sa67saf64s".into(),
+            duration_ms: 16345340,
+        };
+
+        let room = Room {
+            id: "test_room".into(),
+            users: Vec::new(),
+            djs: None,
+            playing: None,
+            next_up: Some(test_track.clone()),
+        };
+
+        update_room(room.clone(), conn).unwrap();
+
+        let res = get_room("test_room", conn);
+
+        assert_eq!(res, Ok(Some(room)));
+    }
 }
