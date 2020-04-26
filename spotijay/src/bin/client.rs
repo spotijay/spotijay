@@ -5,7 +5,7 @@ use rspotify::blocking::{
     util::get_token,
 };
 use rspotify::model::offset::for_position;
-use shared::lib::{now, Input, Output, Room};
+use shared::lib::{current_unix_epoch, Input, Output, Room};
 use std::sync::{Arc, Mutex};
 use tungstenite::{connect, Message};
 use url::Url;
@@ -115,7 +115,7 @@ fn main() {
                 db.lock().unwrap().replace(room.clone());
             }
             Output::TrackPlayed(playing) => {
-                let offset = now() - playing.started;
+                let offset = current_unix_epoch() - playing.started;
                 block_on(play_song(playing.uri, offset as u32));
             }
             Output::NextTrackQueued(track) => {
