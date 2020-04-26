@@ -53,8 +53,8 @@ jobs:
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
         REDIRECT_URI: https://spotijay.github.io/callback
-        SERVER_URL: spotijay.lerring.no:8473
-        SERVER_WS_URL: wss://spotijay.lerring.no:8473/
+        SERVER_URL: spotijay.herokuapp.com
+        SERVER_WS_URL: wss://spotijay.herokuapp.com/
       with:
         command: make
         args: build-release

@@ -47,7 +47,7 @@ async fn handle_connection(
     acceptor: &Option<TlsAcceptor>,
     addr: SocketAddr,
     pool: Pool,
-) {
+) -> Result<(), ()> {
     println!("Incoming TCP connection from: {}", addr);
 
     let stream = if let Some(acceptor) = acceptor {
@@ -60,7 +60,7 @@ async fn handle_connection(
 
     let ws_stream = async_tungstenite::accept_async(stream)
         .await
-        .expect("Error during the websocket handshake occurred");
+        .map_err(|_| ())?;
 
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
@@ -85,6 +85,8 @@ async fn handle_connection(
 
     println!("{} disconnected", &addr);
     peers_wrap.lock().unwrap().remove(&addr);
+
+    Ok(())
 }
 
 fn handle_message(
