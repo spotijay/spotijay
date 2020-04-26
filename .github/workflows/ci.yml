@@ -48,15 +48,20 @@ jobs:
     - name: Build main project and webclient
       uses: actions-rs/cargo@v1
       env:
-        CLIENT_ID: ${{ secrets.CLIENT_ID }}
-        REDIRECT_URI: https://spotijay.github.io/callback
-        SERVER_URL: spotijay.lerring.no:8473
-        SERVER_WS_URL: wss://spotijay.lerring.no:8473/
+        CLIENT_ID: test
+        REDIRECT_URI: https://localhost:8000/callback
+        SERVER_URL: localhost:8000
+        SERVER_WS_URL: wss://localhost:8000/
       with:
         command: make
         args: build
     - name: Test all projects
       uses: actions-rs/cargo@v1
+      env:
+        CLIENT_ID: test
+        REDIRECT_URI: https://localhost:8000/callback
+        SERVER_URL: localhost:8000
+        SERVER_WS_URL: wss://localhost:8000/
       with:
         command: make
         args: test
