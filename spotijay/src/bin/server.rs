@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use shared::lib::{now, Input, Output, Playing, Room, Track, User, Zipper};
+use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, User, Zipper};
 
 use futures::{
     channel::mpsc::{unbounded, UnboundedSender},
@@ -73,148 +73,8 @@ async fn handle_connection(
 
     let (outgoing, incoming) = ws_stream.split();
 
-    let broadcast_incoming = incoming.try_for_each(|msg| {
-        let input: Result<Input, serde_json::Error> = serde_json::from_str(msg.to_text().unwrap());
-        println!("Received a message from {}: {:?}", addr, input);
-
-        let conn = pool.get().unwrap();
-
-        if let Err(e) = input {
-            println!(
-                "Couldn't deserialize: {:?}, serde error: {:?}",
-                msg.to_text(),
-                e
-            );
-        } else if let Ok(val) = input {
-            match val {
-                Input::Authenticate(user_id) => {
-                    peers_wrap.lock().unwrap().get_mut(&addr).unwrap().user_id = Some(user_id);
-
-                    let serialized = serde_json::to_string_pretty(&Output::RoomState(
-                        get_room("the_room", &conn).unwrap().unwrap(),
-                    ));
-
-                    tx.unbounded_send(serialized.unwrap().into()).unwrap();
-                }
-                Input::JoinRoom(user) => {
-                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
-                    if !room.users.iter().any(|x| x.id == user.id) {
-                        if let Some(djs) = &room.djs {
-                            if !djs.iter().any(|x| x.id == user.id) {
-                                room.users.push(user.clone());
-                            }
-                        } else {
-                            room.users.push(user.clone());
-                        }
-                    }
-
-                    update_room(room.clone(), &conn).unwrap();
-
-                    tx.unbounded_send(
-                        serde_json::to_string_pretty(&Output::RoomState(room))
-                            .unwrap()
-                            .into(),
-                    )
-                    .unwrap();
-                }
-                Input::BecomeDj(user_id) => {
-                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
-                    let user = room.users.iter().find(|x| x.id == user_id);
-
-                    if let Some(user) = user {
-                        let user = user.clone();
-
-                        if user.queue.len() > 0 {
-                            room.users.retain(|x| x.id != user_id);
-
-                            if let Some(djs) = &mut room.djs {
-                                djs.after.push(user);
-                            } else {
-                                room.djs = Some(Zipper::singleton(user))
-                            }
-                        }
-                    }
-
-                    update_room(room, &conn).unwrap();
-
-                    start_playing_if_theres_a_dj(&pool, peers_wrap.clone());
-
-                    let peers = peers_wrap.lock().unwrap();
-                    let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
-
-                    for recp in recipients {
-                        let output =
-                            Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
-                        recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                            .unwrap();
-                    }
-                }
-                Input::UnbecomeDj(_user_id) => {
-                    unimplemented!();
-                }
-                Input::AddTrack(user_id, track) => {
-                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
-                    if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
-                        this_user.queue.push(track.clone());
-                    } else if let Some(djs) = &mut room.djs {
-                        let this_dj = djs.iter_mut().find(|x| x.id == user_id);
-
-                        if let Some(dj) = this_dj {
-                            dj.queue.push(track.clone());
-                        }
-                    }
-
-                    update_room(room, &conn).unwrap();
-
-                    start_playing_if_theres_a_dj(&pool, peers_wrap.clone());
-
-                    let peers = peers_wrap.lock().unwrap();
-                    let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
-
-                    for recp in recipients {
-                        let output =
-                            Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
-                        recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                            .unwrap();
-                    }
-                }
-                Input::RemoveTrack(user_id, track_id) => {
-                    let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
-                    if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
-                        this_user.queue.retain(|x| x.id != track_id);
-                    } else if let Some(djs) = &mut room.djs {
-                        let this_dj = djs.iter_mut().find(|x| x.id == user_id);
-
-                        if let Some(dj) = this_dj {
-                            dj.queue.retain(|x| x.id != track_id);
-                        }
-                    }
-
-                    prune_djs_without_queue(&mut room);
-
-                    update_room(room, &conn).unwrap();
-
-                    start_playing_if_theres_a_dj(&pool, peers_wrap.clone());
-
-                    let peers = peers_wrap.lock().unwrap();
-                    let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
-
-                    for recp in recipients {
-                        let output =
-                            Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
-                        recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                            .unwrap();
-                    }
-                }
-            }
-        }
-
-        future::ok(())
-    });
+    let broadcast_incoming =
+        incoming.try_for_each(|msg| handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr));
 
     let receive_from_others = rx.map(Ok).forward(outgoing);
 
@@ -223,6 +83,165 @@ async fn handle_connection(
 
     println!("{} disconnected", &addr);
     peers_wrap.lock().unwrap().remove(&addr);
+}
+
+fn handle_message(
+    pool: Pool,
+    peers_wrap: PeerMap,
+    tx: UnboundedSender<Message>,
+    msg: Message,
+    addr: SocketAddr,
+) -> futures::future::Ready<Result<(), tungstenite::error::Error>> {
+    let input: Result<Input, serde_json::Error> = serde_json::from_str(msg.to_text().unwrap());
+    let conn = pool.get().unwrap();
+
+    if let Err(e) = input {
+        println!(
+            "Couldn't deserialize: {:?}, serde error: {:?}",
+            msg.to_text(),
+            e
+        );
+    } else if let Ok(val) = input {
+        match val {
+            Input::Authenticate(user_id) => {
+                peers_wrap.lock().unwrap().get_mut(&addr).unwrap().user_id = Some(user_id);
+
+                let serialized = serde_json::to_string_pretty(&Output::RoomState(
+                    get_room("the_room", &conn).unwrap().unwrap(),
+                ));
+
+                tx.unbounded_send(serialized.unwrap().into()).unwrap();
+            }
+            Input::JoinRoom(user) => {
+                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+                if !room.users.iter().any(|x| x.id == user.id) {
+                    if let Some(djs) = &room.djs {
+                        if !djs.iter().any(|x| x.id == user.id) {
+                            room.users.push(user.clone());
+                        }
+                    } else {
+                        room.users.push(user.clone());
+                    }
+                }
+
+                update_room(room.clone(), &conn).unwrap();
+
+                tx.unbounded_send(
+                    serde_json::to_string_pretty(&Output::RoomState(room))
+                        .unwrap()
+                        .into(),
+                )
+                .unwrap();
+            }
+            Input::BecomeDj(user_id) => {
+                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+                let user = room.users.iter().find(|x| x.id == user_id);
+
+                if let Some(user) = user {
+                    let user = user.clone();
+
+                    if user.queue.len() > 0 {
+                        room.users.retain(|x| x.id != user_id);
+
+                        if let Some(djs) = &mut room.djs {
+                            djs.after.push(user);
+                        } else {
+                            room.djs = Some(Zipper::singleton(user))
+                        }
+                    }
+                }
+
+                start_playing_if_theres_a_dj(
+                    &mut room,
+                    &pool,
+                    peers_wrap.clone(),
+                    current_unix_epoch(),
+                );
+
+                update_room(room, &conn).unwrap();
+
+                let peers = peers_wrap.lock().unwrap();
+                let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
+
+                for recp in recipients {
+                    let output = Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
+                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
+                        .unwrap();
+                }
+            }
+            Input::UnbecomeDj(_user_id) => {
+                unimplemented!();
+            }
+            Input::AddTrack(user_id, track) => {
+                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+                if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
+                    this_user.queue.push(track.clone());
+                } else if let Some(djs) = &mut room.djs {
+                    let this_dj = djs.iter_mut().find(|x| x.id == user_id);
+
+                    if let Some(dj) = this_dj {
+                        dj.queue.push(track.clone());
+                    }
+                }
+
+                start_playing_if_theres_a_dj(
+                    &mut room,
+                    &pool,
+                    peers_wrap.clone(),
+                    current_unix_epoch(),
+                );
+
+                update_room(room, &conn).unwrap();
+
+                let peers = peers_wrap.lock().unwrap();
+                let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
+
+                for recp in recipients {
+                    let output = Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
+                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
+                        .unwrap();
+                }
+            }
+            Input::RemoveTrack(user_id, track_id) => {
+                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+                if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
+                    this_user.queue.retain(|x| x.id != track_id);
+                } else if let Some(djs) = &mut room.djs {
+                    let this_dj = djs.iter_mut().find(|x| x.id == user_id);
+
+                    if let Some(dj) = this_dj {
+                        dj.queue.retain(|x| x.id != track_id);
+                    }
+                }
+
+                prune_djs_without_queue(&mut room);
+
+                start_playing_if_theres_a_dj(
+                    &mut room,
+                    &pool,
+                    peers_wrap.clone(),
+                    current_unix_epoch(),
+                );
+
+                update_room(room, &conn).unwrap();
+
+                let peers = peers_wrap.lock().unwrap();
+                let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
+
+                for recp in recipients {
+                    let output = Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
+                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    future::ok(())
 }
 
 fn get_room(room_id: &str, conn: &Connection) -> rusqlite::Result<Option<Room>> {
@@ -284,10 +303,7 @@ fn send_to_all(peers: PeerMap, data: &String) {
     }
 }
 
-fn start_playing_if_theres_a_dj(pool: &Pool, peers: PeerMap) {
-    let conn = pool.get().unwrap();
-    let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
+fn start_playing_if_theres_a_dj(room: &mut Room, pool: &Pool, peers: PeerMap, now: u64) {
     let play_new_track = {
         if let None = room.playing {
             if let Some(djs) = &mut room.djs {
@@ -304,18 +320,10 @@ fn start_playing_if_theres_a_dj(pool: &Pool, peers: PeerMap) {
         }
     };
 
-    update_room(room, &conn).unwrap();
-
     if let Some(track) = play_new_track {
-        play(pool.clone(), peers.clone(), track.clone());
+        play(room, pool.clone(), peers.clone(), track.clone(), now);
 
-        let playing = Playing {
-            id: track.id.clone(),
-            name: track.name.clone(),
-            uri: track.uri.clone(),
-            duration_ms: track.duration_ms.clone(),
-            started: now(),
-        };
+        let playing = Playing::new(track.clone(), now);
 
         send_to_all(
             peers,
@@ -369,21 +377,17 @@ fn next_djs(djs: &mut Zipper<User>) {
     }
 }
 
-fn play(pool: Pool, peers: PeerMap, track: Track) -> () {
+fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
     let playing = Playing {
         id: track.id.clone(),
         name: track.name.clone(),
         uri: track.uri.clone(),
         duration_ms: track.duration_ms.clone(),
-        started: now(),
+        started: now,
     };
 
-    let conn = pool.get().unwrap();
-    let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
     room.playing = Some(playing);
-    update_room(room, &conn).unwrap();
-    println!("Now playing: {:?}", track);
+    println!("Now playing: {:?} in room {:?}", track, room);
 
     let later_peers = peers.clone();
     let later_peers2 = peers.clone();
@@ -395,53 +399,66 @@ fn play(pool: Pool, peers: PeerMap, track: Track) -> () {
 
         async_std::task::sleep(playing_duration - next_up_duration).await;
 
-        let conn = later_pool.get().unwrap();
-        let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
-        if let Some(djs) = &mut room.djs {
-            next_djs(djs);
-
-            if djs.current.queue.len() > 0 {
-                room.next_up = Some(djs.current.queue.remove(0));
-            } else {
-                room.next_up = None;
-            }
-        }
-        println!("Next up queued: {:?}", room.next_up);
-
-        if let Some(next) = room.next_up.clone() {
-            send_to_all(
-                later_peers,
-                &serde_json::to_string_pretty(&Output::NextTrackQueued(next)).unwrap(),
-            );
-        }
-
-        update_room(room, &conn).unwrap();
+        set_next_up_from_queue(later_pool, later_peers);
 
         task::spawn(async move {
             async_std::task::sleep(Duration::from_millis(5000)).await;
-
-            let conn = later_pool2.get().unwrap();
-            let mut room = get_room("the_room", &conn).unwrap().unwrap();
-
-            let next_track_wrap = { room.next_up.take() };
-
-            if let Some(next_track) = next_track_wrap {
-                play(later_pool, later_peers2.clone(), next_track);
-            } else {
-                room.playing = None;
-            }
-
-            prune_djs_without_queue(&mut room);
-
-            update_room(room.clone(), &conn).unwrap();
-
-            send_to_all(
-                later_peers2,
-                &serde_json::to_string_pretty(&Output::RoomState(room)).unwrap(),
-            );
+            play_from_next_up(later_pool2, later_peers2)
         });
     });
+}
+
+fn play_from_next_up(later_pool2: Pool, later_peers2: PeerMap) {
+    let conn = later_pool2.get().unwrap();
+    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+    let next_track_wrap = { room.next_up.take() };
+
+    if let Some(next_track) = next_track_wrap {
+        play(
+            &mut room,
+            later_pool2,
+            later_peers2.clone(),
+            next_track,
+            current_unix_epoch(),
+        );
+    } else {
+        room.playing = None;
+    }
+
+    prune_djs_without_queue(&mut room);
+
+    update_room(room.clone(), &conn).unwrap();
+
+    send_to_all(
+        later_peers2,
+        &serde_json::to_string_pretty(&Output::RoomState(room)).unwrap(),
+    );
+}
+
+fn set_next_up_from_queue(later_pool: Pool, later_peers: PeerMap) {
+    let conn = later_pool.get().unwrap();
+    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+    if let Some(djs) = &mut room.djs {
+        next_djs(djs);
+
+        if djs.current.queue.len() > 0 {
+            room.next_up = Some(djs.current.queue.remove(0));
+        } else {
+            room.next_up = None;
+        }
+    }
+    println!("Next up queued: {:?}", room.next_up);
+
+    if let Some(next) = room.next_up.clone() {
+        send_to_all(
+            later_peers,
+            &serde_json::to_string_pretty(&Output::NextTrackQueued(next)).unwrap(),
+        );
+    }
+
+    update_room(room, &conn).unwrap();
 }
 
 fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
@@ -495,7 +512,10 @@ async fn run() -> Result<(), IoError> {
     let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", &url);
 
-    start_playing_if_theres_a_dj(&pool, peers.clone());
+    let init_conn = &pool.get().unwrap();
+    let mut room = get_room("the_room", init_conn).unwrap().unwrap();
+    start_playing_if_theres_a_dj(&mut room, &pool, peers.clone(), current_unix_epoch());
+    update_room(room, init_conn).unwrap();
 
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
@@ -519,7 +539,10 @@ mod test {
 
     fn setup_test_db(
         db_name: &str,
-    ) -> r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager> {
+    ) -> (
+        Pool,
+        r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>,
+    ) {
         let path = &format!("file:{}?mode=memory&cache=shared", db_name);
         let manager = SqliteConnectionManager::file(path);
         let pool = r2d2::Pool::new(manager).unwrap();
@@ -529,12 +552,12 @@ mod test {
 
         setup_db(migrate_conn);
 
-        conn
+        (pool, conn)
     }
 
     #[test]
     fn test_insert_track() {
-        let conn = &setup_test_db("test_insert_track");
+        let (_, conn) = &setup_test_db("test_insert_track");
 
         let test_track = Track {
             id: "sa67saf64s".into(),
@@ -558,7 +581,7 @@ mod test {
 
     #[test]
     fn test_get_room() {
-        let conn = &setup_test_db("test_get_room");
+        let (_, conn) = &setup_test_db("test_get_room");
 
         let test_track = Track {
             id: "sa67saf64s".into(),
@@ -580,5 +603,35 @@ mod test {
         let res = get_room("test_room", conn);
 
         assert_eq!(res, Ok(Some(room)));
+    }
+
+    #[test]
+    fn test_start_playing_if_theres_a_dj() {
+        let (pool, _) = &setup_test_db("test_start_playing_if_theres_a_dj");
+        let peers = PeerMap::new(Mutex::new(HashMap::new()));
+
+        let track = Track {
+            id: "sa67saf64s".into(),
+            name: "Cool jazz stuff".into(),
+            uri: "spotify:track:sa67saf64s".into(),
+            duration_ms: 16345340,
+        };
+
+        let dj = User {
+            id: "test_dj".into(),
+            queue: vec![track.clone()],
+        };
+
+        let mut room = Room {
+            id: "test_room".into(),
+            users: Vec::new(),
+            djs: Some(Zipper::singleton(dj)),
+            playing: None,
+            next_up: None,
+        };
+
+        start_playing_if_theres_a_dj(&mut room, pool, peers, 5678);
+
+        assert_eq!(room.playing, Some(Playing::new(track, 5678)));
     }
 }

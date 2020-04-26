@@ -32,6 +32,18 @@ pub mod lib {
         pub started: u64,
     }
 
+    impl Playing {
+        pub fn new(track: Track, started: u64) -> Self {
+            Playing {
+                id: track.id,
+                name: track.name,
+                uri: track.uri,
+                duration_ms: track.duration_ms,
+                started: started,
+            }
+        }
+    }
+
     #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct Zipper<T> {
         pub before: Vec<T>,
@@ -105,7 +117,7 @@ pub mod lib {
         NextTrackQueued(Track),
     }
 
-    pub fn now() -> u64 {
+    pub fn current_unix_epoch() -> u64 {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()

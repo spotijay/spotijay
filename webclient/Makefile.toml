@@ -49,7 +49,7 @@ args = ["test", "--node", "--release"]
 description = "Start server"
 install_crate = { crate_name = "microserver", binary = "microserver", test_arg = "-h" }
 command = "microserver"
-args = ["--port", "${PORT}"]
+args = ["--port", "8000"]
 
 [tasks.watch]
 description = "Build, create wasms, and watch/recompile files for changes"
