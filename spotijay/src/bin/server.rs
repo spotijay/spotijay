@@ -6,6 +6,7 @@ use std::{
     net::SocketAddr,
     path::Path,
     sync::{Arc, Mutex},
+    env,
 };
 
 use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, User, Zipper};
@@ -485,6 +486,8 @@ mod embedded {
 async fn run() -> Result<(), IoError> {
     env_logger::init();
 
+    dotenv::dotenv().ok();
+
     let manager = SqliteConnectionManager::file("./db.sqlite");
     //let manager = SqliteConnectionManager::memory();
     let pool = r2d2::Pool::new(manager).unwrap();
@@ -496,8 +499,8 @@ async fn run() -> Result<(), IoError> {
 
     let mut config = ServerConfig::new(NoClientAuth::new());
 
-    let ssl_cert = dotenv::var("SSL_CERT");
-    let ssl_key = dotenv::var("SSL_KEY");
+    let ssl_cert = env::var("SSL_CERT");
+    let ssl_key = env::var("SSL_KEY");
 
     let acceptor = if ssl_cert.is_ok() && ssl_key.is_ok() {
         let certs = load_certs(Path::new(&ssl_cert.unwrap())).unwrap();
@@ -509,7 +512,11 @@ async fn run() -> Result<(), IoError> {
         None
     };
 
-    let url = dotenv::var("SERVER_URL").unwrap();
+    let url = format!(
+        "{}:{}",
+        env::var("SERVER_URL").unwrap(),
+        env::var("PORT").unwrap()
+    );
     let try_socket = TcpListener::bind(&url).await;
     let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", &url);
