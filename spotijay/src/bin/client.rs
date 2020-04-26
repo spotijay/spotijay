@@ -121,6 +121,9 @@ fn main() {
             Output::NextTrackQueued(track) => {
                 block_on(queue_song(track.uri));
             }
+            Output::Authenticated(user_id) => {
+                todo!()
+            }
         }
     }
 }

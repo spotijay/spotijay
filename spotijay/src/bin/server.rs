@@ -73,8 +73,9 @@ async fn handle_connection(
 
     let (outgoing, incoming) = ws_stream.split();
 
-    let broadcast_incoming =
-        incoming.try_for_each(|msg| handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr));
+    let broadcast_incoming = incoming.try_for_each(|msg| {
+        handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr)
+    });
 
     let receive_from_others = rx.map(Ok).forward(outgoing);
 
@@ -104,13 +105,14 @@ fn handle_message(
     } else if let Ok(val) = input {
         match val {
             Input::Authenticate(user_id) => {
-                peers_wrap.lock().unwrap().get_mut(&addr).unwrap().user_id = Some(user_id);
+                peers_wrap.lock().unwrap().get_mut(&addr).unwrap().user_id = Some(user_id.clone());
 
-                let serialized = serde_json::to_string_pretty(&Output::RoomState(
-                    get_room("the_room", &conn).unwrap().unwrap(),
-                ));
-
-                tx.unbounded_send(serialized.unwrap().into()).unwrap();
+                tx.unbounded_send(
+                    serde_json::to_string_pretty(&Output::Authenticated(user_id))
+                        .unwrap()
+                        .into(),
+                )
+                .unwrap();
             }
             Input::JoinRoom(user) => {
                 let mut room = get_room("the_room", &conn).unwrap().unwrap();

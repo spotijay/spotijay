@@ -49,7 +49,7 @@ pub fn login_url() -> String {
             ("client_id", dotenv_codegen::dotenv!("CLIENT_ID")),
             ("response_type", "token"),
             ("redirect_uri", dotenv_codegen::dotenv!("REDIRECT_URI")),
-            ("scope", "user-read-private user-modify-playback-state"),
+            ("scope", "user-modify-playback-state"),
         ],
     )
     .unwrap()

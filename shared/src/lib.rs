@@ -112,6 +112,7 @@ pub mod lib {
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub enum Output {
+        Authenticated(String),
         RoomState(Room),
         TrackPlayed(Playing),
         NextTrackQueued(Track),

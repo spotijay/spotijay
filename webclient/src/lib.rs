@@ -27,31 +27,47 @@ struct Model {
 #[derive(Debug)]
 enum Data {
     Authed(AuthedModel),
-    UnAuthed(),
+    UnAuthed(UnauthedModel),
 }
 
 #[derive(Debug)]
 struct AuthedModel {
-    auth: Auth,
+    session: Session,
+    auth: Option<SpotifyAuth>,
     search: String,
     room: Option<Room>,
-    profile: Option<spotify::SpotifyProfile>,
     search_result: Option<spotify::SpotifySearchResult>,
 }
 
+#[derive(Debug)]
+struct UnauthedModel {
+    user_id: String,
+}
+
+impl Default for UnauthedModel {
+    fn default() -> Self {
+        UnauthedModel { user_id: "".into() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Auth {
+struct SpotifyAuth {
     access_token: String,
     expires_epoch: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Session {
+    user_id: String,
+}
+
 impl AuthedModel {
-    fn new(auth: Auth) -> Self {
+    fn new(session: Session) -> Self {
         AuthedModel {
-            auth: auth,
+            session: session,
+            auth: None,
             search: "".into(),
             room: None,
-            profile: None,
             search_result: None,
         }
     }
@@ -83,11 +99,19 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
         _ => Page::Home,
     };
 
-    if parsed_page == Page::Callback {
-        orders.send_msg(Msg::LoggedIn);
+    let session = ls
+        .get_item("spotijay_session")
+        .expect("try to get item from `LocalStorage`");
+    let session: Option<Session> = session.map(|x| serde_json::from_str(&x).unwrap());
 
+    let mut data = match session {
+        Some(session) => Data::Authed(AuthedModel::new(session)),
+        None => Data::UnAuthed(UnauthedModel::default()),
+    };
+
+    if parsed_page == Page::Callback {
         AfterMount::new(Model {
-            data: Data::UnAuthed(),
+            data: data,
             page: Page::Home,
             services: Services { ws, ls },
         })
@@ -96,18 +120,14 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
             .get_item("spotify_auth")
             .expect("try to get item from `LocalStorage`");
 
-        let auth: Option<Auth> = auth.map(|x| serde_json::from_str(&x).unwrap());
+        let auth: Option<SpotifyAuth> = auth.map(|x| serde_json::from_str(&x).unwrap());
 
-        let data = match auth {
-            Some(auth) => {
-                if auth.access_token.is_empty() {
-                    Data::UnAuthed()
-                } else {
-                    orders.perform_cmd(get_spotify_profile(auth.clone()));
-                    Data::Authed(AuthedModel::new(auth))
-                }
-            }
-            _ => Data::UnAuthed(),
+        if let Data::Authed(authed_model) = &mut data {
+            if let Some(auth) = auth {
+                if !auth.access_token.is_empty() {
+                    authed_model.auth = Some(auth);
+                };
+            };
         };
 
         AfterMount::new(Model {
@@ -139,6 +159,8 @@ fn register_ws_handler<T, F>(
 
 #[derive(Debug, Clone)]
 enum Msg {
+    Authenticate,
+    UsernameChange(String),
     Connected(JsValue),
     ServerMessage(MessageEvent),
     Closed(JsValue),
@@ -148,8 +170,8 @@ enum Msg {
     RemoveTrack(String),
     SearchFetched(seed::fetch::ResponseDataResult<spotify::SpotifySearchResult>),
     ProfileFetched(seed::fetch::ResponseDataResult<spotify::SpotifyProfile>),
-    LoggingIn,
-    LoggedIn,
+    LoggingInToSpotify,
+    LoggedInSpotify,
     Logout,
     Queued,
     Played,
@@ -158,7 +180,7 @@ enum Msg {
     UnbecomeDj,
 }
 
-async fn get_spotify_profile(auth: Auth) -> Result<Msg, Msg> {
+async fn get_spotify_profile(auth: SpotifyAuth) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
         futures::future::ok(Msg::Logout).await
     } else {
@@ -169,7 +191,7 @@ async fn get_spotify_profile(auth: Auth) -> Result<Msg, Msg> {
     }
 }
 
-async fn get_spotify_search(auth: Auth, search: String) -> Result<Msg, Msg> {
+async fn get_spotify_search(auth: SpotifyAuth, search: String) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
         futures::future::ok(Msg::Logout).await
     } else {
@@ -187,7 +209,7 @@ async fn get_spotify_search(auth: Auth, search: String) -> Result<Msg, Msg> {
     }
 }
 
-async fn put_spotify_play(auth: Auth, uri: String, position_ms: u32) -> Result<Msg, Msg> {
+async fn put_spotify_play(auth: SpotifyAuth, uri: String, position_ms: u32) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
         futures::future::ok(Msg::Logout).await
     } else {
@@ -203,7 +225,7 @@ async fn put_spotify_play(auth: Auth, uri: String, position_ms: u32) -> Result<M
     }
 }
 
-async fn post_spotify_queue(auth: Auth, uri: String) -> Result<Msg, Msg> {
+async fn post_spotify_queue(auth: SpotifyAuth, uri: String) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
         futures::future::ok(Msg::Logout).await
     } else {
@@ -219,25 +241,133 @@ async fn post_spotify_queue(auth: Auth, uri: String) -> Result<Msg, Msg> {
 }
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
-    log!("msg: ", msg);
-    log!("model: ", model);
+    match msg.clone() {
+        Msg::ChangePage(page) => {
+            seed::push_route(page.path());
+            model.page = page;
+        }
+        Msg::Logout => model.data = Data::UnAuthed(UnauthedModel::default()),
+        Msg::ServerMessage(msg_event) => {
+            let txt = msg_event.data().as_string().unwrap();
+            let json: Output = serde_json::from_str(&txt).unwrap();
 
-    match msg {
-        Msg::Logout => model.data = Data::UnAuthed(),
+            match json {
+                Output::Authenticated(user_id) => {
+                    storage::store_data(
+                        &model.services.ls,
+                        "spotijay_session",
+                        &Session {
+                            user_id: user_id.clone(),
+                        },
+                    );
+
+                    let auth = model
+                        .services
+                        .ls
+                        .get_item("spotify_auth")
+                        .expect("try to get item from `LocalStorage`");
+
+                    let auth: Option<SpotifyAuth> = auth.map(|x| serde_json::from_str(&x).unwrap());
+
+                    let auth = if let Some(auth) = auth {
+                        if auth.access_token.is_empty() {
+                            Some(auth)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let mut authed_model = AuthedModel::new(Session {
+                        user_id: user_id.clone(),
+                    });
+                    authed_model.auth = auth;
+
+                    model.data = Data::Authed(authed_model);
+
+                    &model
+                        .services
+                        .ws
+                        .send_with_str(
+                            &serde_json::to_string(&Input::JoinRoom(User {
+                                id: user_id,
+                                queue: vec![],
+                            }))
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+                _ => match &mut model.data {
+                    Data::Authed(authed_model) => {
+                        authed_update(msg, &model.services, authed_model, &mut model.page, orders)
+                    }
+                    Data::UnAuthed(unauthed_model) => {
+                        unauthed_update(msg, &model.services, unauthed_model)
+                    }
+                },
+            }
+        }
         _ => match &mut model.data {
-            Data::Authed(authed_model) => authed_update(msg, &model.services, authed_model, orders),
-            Data::UnAuthed() => unauthed_update(msg, model, orders),
+            Data::Authed(authed_model) => {
+                authed_update(msg, &model.services, authed_model, &mut model.page, orders)
+            }
+            Data::UnAuthed(unauthed_model) => unauthed_update(msg, &model.services, unauthed_model),
         },
     };
 }
 
-fn unauthed_update(msg: Msg, mut model: &mut Model, orders: &mut impl Orders<Msg>) {
+fn unauthed_update(msg: Msg, services: &Services, unauthed_model: &mut UnauthedModel) {
     match msg {
-        Msg::LoggingIn => {
-            log!("Loggin in");
+        Msg::Authenticate => {
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::Authenticate(unauthed_model.user_id.clone()))
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        Msg::UsernameChange(user_id) => {
+            unauthed_model.user_id = user_id;
+        }
+        Msg::LoggingInToSpotify => {
+            error!("Loggin in to Spotify without authenticating with Spotijay, oh no");
+        }
+        Msg::LoggedInSpotify => {
+            error!("Logged in to Spotify before authenticating with Spotijay, oh no");
+        }
+        Msg::ChangePage(_) => {}
+        Msg::Logout => {}
+        Msg::Connected(_) => {
+            log!("WebSocket connection is open now");
+        }
+        Msg::Closed(_) => {
+            log!("WebSocket connection was closed");
+        }
+        Msg::Error(_) => {
+            log!("Error");
+        }
+        _ => {
+            error!("Invalid Msg for unauthed user: {:?}", msg);
+        }
+    }
+}
+
+fn authed_update(
+    msg: Msg,
+    services: &Services,
+    authed_model: &mut AuthedModel,
+    page: &mut Page,
+    orders: &mut impl Orders<Msg>,
+) {
+    match msg {
+        Msg::Authenticate => {}
+        Msg::UsernameChange(_) => {}
+        Msg::LoggingInToSpotify => {
             window().location().set_href(&spotify::login_url()).unwrap();
         }
-        Msg::LoggedIn => {
+        Msg::LoggedInSpotify => {
             let url =
                 url::Url::parse(&window().location().href().unwrap().replace("#", "?")).unwrap();
             let query_pairs = url.query_pairs();
@@ -260,64 +390,40 @@ fn unauthed_update(msg: Msg, mut model: &mut Model, orders: &mut impl Orders<Msg
             let expires_epoch =
                 js_sys::Date::now() as u64 + (expires_in.parse::<u64>().unwrap() * 1000);
 
-            let auth = Auth {
+            let auth = SpotifyAuth {
                 access_token,
                 expires_epoch: expires_epoch,
             };
-            storage::store_data(&model.services.ls, "spotify_auth", &auth);
-            model.data = Data::Authed(AuthedModel::new(auth.clone()));
+            storage::store_data(&services.ls, "spotify_auth", &auth);
+            authed_model.auth = Some(auth.clone());
 
             seed::push_route(Page::Home.path());
-            model.page = Page::Home;
+            *page = Page::Home;
 
             orders.perform_cmd(get_spotify_profile(auth.clone()));
-        }
-        Msg::ChangePage(page) => {
-            seed::push_route(page.path());
-            model.page = page;
-        }
-        Msg::Logout => {}
-        Msg::Connected(_) => {
-            log!("WebSocket connection is open now");
-        }
-        Msg::Closed(_) => {
-            log!("WebSocket connection was closed");
-        }
-        Msg::Error(_) => {
-            log!("Error");
-        }
-        _ => {
-            error!("Invalid Msg for unauthed user: {:?}", msg);
-        }
-    }
-}
-
-fn authed_update(
-    msg: Msg,
-    services: &Services,
-    authed_model: &mut AuthedModel,
-    orders: &mut impl Orders<Msg>,
-) {
-    match msg {
-        Msg::LoggingIn => {
-            error!("Loggin in again after already logged in, oh no");
-        }
-        Msg::LoggedIn => {
-            error!("Logged in again after already logged in, oh no");
         }
         Msg::Queued => {}
         Msg::Played => {}
         Msg::ChangePage(_) => {}
         Msg::Logout => {}
-        Msg::Connected(_) => {}
+        Msg::Connected(_) => {
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::JoinRoom(User {
+                        id: authed_model.session.user_id.clone(),
+                        queue: vec![],
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+        }
         Msg::BecomeDj => {
             services
                 .ws
                 .send_with_str(
-                    &serde_json::to_string(&Input::BecomeDj(
-                        authed_model.profile.clone().unwrap().id,
-                    ))
-                    .unwrap(),
+                    &serde_json::to_string(&Input::BecomeDj(authed_model.session.clone().user_id))
+                        .unwrap(),
                 )
                 .unwrap();
         }
@@ -326,7 +432,7 @@ fn authed_update(
                 .ws
                 .send_with_str(
                     &serde_json::to_string(&Input::UnbecomeDj(
-                        authed_model.profile.clone().unwrap().id,
+                        authed_model.session.clone().user_id,
                     ))
                     .unwrap(),
                 )
@@ -348,7 +454,7 @@ fn authed_update(
                 .ws
                 .send_with_str(
                     &serde_json::to_string(&Input::AddTrack(
-                        authed_model.profile.clone().unwrap().id,
+                        authed_model.session.clone().user_id,
                         Track {
                             id: track.id,
                             name: track.name,
@@ -360,6 +466,7 @@ fn authed_update(
                 )
                 .unwrap();
 
+            authed_model.search = "".into();
             authed_model.search_result = None;
         }
         Msg::RemoveTrack(track_id) => {
@@ -367,7 +474,7 @@ fn authed_update(
                 .ws
                 .send_with_str(
                     &serde_json::to_string(&Input::RemoveTrack(
-                        authed_model.profile.clone().unwrap().id,
+                        authed_model.session.clone().user_id,
                         track_id,
                     ))
                     .unwrap(),
@@ -388,12 +495,11 @@ fn authed_update(
                         .unwrap(),
                     )
                     .unwrap();
-                authed_model.profile = Some(profile)
+                //authed_model.profile = Some(profile)
             }
             Err(e) => error!("Profile error: {}", e),
         },
         Msg::ServerMessage(msg_event) => {
-            log!("Client received a message");
             let txt = msg_event.data().as_string().unwrap();
             let json: Output = serde_json::from_str(&txt).unwrap();
 
@@ -401,31 +507,38 @@ fn authed_update(
                 Output::RoomState(room) => {
                     if let None = authed_model.room {
                         if let Some(playing) = &room.playing {
-                            let offset_ms = (js_sys::Date::now() as u64) - playing.started;
-                            orders.perform_cmd(put_spotify_play(
-                                authed_model.auth.clone(),
-                                playing.uri.clone(),
-                                offset_ms as u32,
-                            ));
+                            if let Some(authed_model) = &authed_model.auth {
+                                let offset_ms = (js_sys::Date::now() as u64) - playing.started;
+                                orders.perform_cmd(put_spotify_play(
+                                    authed_model.clone(),
+                                    playing.uri.clone(),
+                                    offset_ms as u32,
+                                ));
+                            }
                         }
                     }
 
                     authed_model.room = Some(room);
                 }
                 Output::TrackPlayed(playing) => {
-                    let offset_ms = (js_sys::Date::now() as u64) - playing.started;
-                    orders.perform_cmd(put_spotify_play(
-                        authed_model.auth.clone(),
-                        playing.uri.clone(),
-                        offset_ms as u32,
-                    ));
+                    if let Some(authed_model) = &authed_model.auth {
+                        let offset_ms = (js_sys::Date::now() as u64) - playing.started;
+                        orders.perform_cmd(put_spotify_play(
+                            authed_model.clone(),
+                            playing.uri.clone(),
+                            offset_ms as u32,
+                        ));
+                    }
                 }
                 Output::NextTrackQueued(track) => {
-                    orders.perform_cmd(post_spotify_queue(
-                        authed_model.auth.clone(),
-                        track.uri.clone(),
-                    ));
+                    if let Some(authed_model) = &authed_model.auth {
+                        orders.perform_cmd(post_spotify_queue(
+                            authed_model.clone(),
+                            track.uri.clone(),
+                        ));
+                    }
                 }
+                Output::Authenticated(_) => {}
             }
         }
         Msg::Closed(_) => {
@@ -438,7 +551,11 @@ fn authed_update(
             authed_model.search = val.clone();
 
             if !val.is_empty() {
-                orders.perform_cmd(get_spotify_search(authed_model.auth.clone(), val.clone()));
+                if let Some(authed_model) = &authed_model.auth {
+                    orders.perform_cmd(get_spotify_search(authed_model.clone(), val.clone()));
+                }
+            } else {
+                authed_model.search_result = None;
             }
         }
         Msg::SearchFetched(res) => match res {
@@ -472,12 +589,9 @@ fn users_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
 fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let mut items: Vec<Node<Msg>> = Vec::new();
 
-    let tracks = current_user(
-        authed_model.profile.as_ref().map(|x| x.id.as_ref())?,
-        authed_model.room.as_ref()?,
-    )?
-    .queue
-    .into_iter();
+    let tracks = current_user(&authed_model.session.user_id, authed_model.room.as_ref()?)?
+        .queue
+        .into_iter();
 
     for track in tracks {
         let event_track = track.clone();
@@ -488,7 +602,15 @@ fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         ]]);
     }
 
-    Some(ol![items])
+    Some(div![
+        h3!["Your playlist"],
+        input![
+            attrs! {At::Value => authed_model.search},
+            attrs! {At::Placeholder => "Search for tracks"},
+            input_ev(Ev::Input, Msg::SearchChange)
+        ],
+        search_result_view(authed_model).unwrap_or(ol![items]),
+    ])
 }
 
 fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
@@ -501,7 +623,16 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
 
         items.push(li![button![
             ev(Ev::Click, move |_| Msg::AddTrack(event_track.id)),
-            track.name
+            format!(
+                "{} - {}",
+                track.name,
+                track
+                    .artists
+                    .iter()
+                    .map(|x| x.name.clone())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )
         ]]);
     }
 
@@ -531,10 +662,7 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
             ]]);
         }
 
-        if djs
-            .iter()
-            .any(|x| x.id != authed_model.profile.clone().unwrap().id)
-        {
+        if djs.iter().any(|x| x.id != authed_model.session.user_id) {
             items.push(li![button![
                 simple_ev(Ev::Click, Msg::BecomeDj),
                 "Become a DJ"
@@ -547,53 +675,46 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         ]]);
     }
 
-    Some(ol![items])
+    Some(div![h3!["DJs"], ol![items]])
+}
+
+fn spotify_login_button() -> Node<Msg> {
+    div![button![
+        simple_ev(Ev::Click, Msg::LoggingInToSpotify),
+        "Log in to Spotify to listen"
+    ]]
 }
 
 fn authed_view(authed_model: &AuthedModel) -> Node<Msg> {
     div![
-        h2![format!(
-            "logged in {}!",
-            authed_model
-                .profile
-                .clone()
-                .map(|x| x.display_name)
-                .unwrap_or("".to_string())
-        )],
+        authed_model
+            .auth
+            .as_ref()
+            .map(|_| div![])
+            .unwrap_or(spotify_login_button()),
         djs_view(authed_model).unwrap_or(div![]),
-        if let Some(items) = playlist_view(authed_model) {
-            div![
-                h3!["Your playlist"],
-                input![
-                    attrs! {At::Placeholder => "Search for tracks"},
-                    input_ev(Ev::Input, Msg::SearchChange)
-                ],
-                search_result_view(authed_model).unwrap_or(items),
-            ]
-        } else {
-            div![]
-        },
+        playlist_view(authed_model).unwrap_or(div![]),
         div![
-            h3!["Users"],
-            users_view(authed_model).unwrap_or(div!["No users"])
+            h3!["Listeners"],
+            users_view(authed_model).unwrap_or(div!["No listeners"])
         ]
     ]
 }
 
-fn unauthed_view() -> Node<Msg> {
-    div![button![simple_ev(Ev::Click, Msg::LoggingIn), "Login"]]
+fn unauthed_view(_unauthed_model: &UnauthedModel) -> Node<Msg> {
+    div![
+        input![
+            attrs! {At::Placeholder => "Username"},
+            input_ev(Ev::Input, Msg::UsernameChange)
+        ],
+        button![simple_ev(Ev::Click, Msg::Authenticate), "Log in"]
+    ]
 }
 
 fn data_view(data: &Data) -> Node<Msg> {
     match &data {
-        Data::Authed(authed) => {
-            if authed.profile.is_some() && authed.room.is_some() {
-                authed_view(authed)
-            } else {
-                h1!["Loading"]
-            }
-        }
-        Data::UnAuthed() => unauthed_view(),
+        Data::Authed(authed) => authed_view(authed),
+        Data::UnAuthed(unauthed_model) => unauthed_view(unauthed_model),
     }
 }
 
@@ -607,7 +728,7 @@ fn routes(url: Url) -> Option<Msg> {
     let parsed_page = Page::from_url(url);
 
     if parsed_page == Some(Page::Callback) {
-        Some(Msg::LoggedIn)
+        Some(Msg::LoggedInSpotify)
     } else {
         parsed_page.map(Msg::ChangePage)
     }
