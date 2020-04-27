@@ -94,11 +94,6 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     register_ws_handler(WebSocket::set_onmessage, Msg::ServerMessage, &ws, orders);
     register_ws_handler(WebSocket::set_onerror, Msg::Error, &ws, orders);
 
-    let parsed_page = match url.path[0].as_ref() {
-        "callback" => Page::Callback,
-        _ => Page::Home,
-    };
-
     let session = ls
         .get_item("spotijay_session")
         .expect("try to get item from `LocalStorage`");
@@ -109,7 +104,7 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
         None => Data::UnAuthed(UnauthedModel::default()),
     };
 
-    if parsed_page == Page::Callback {
+    if is_logging_in(&url) {
         AfterMount::new(Model {
             data: data,
             page: Page::Home,
@@ -155,6 +150,18 @@ fn register_ws_handler<T, F>(
 
     ws_cb_setter(ws, Some(closure.as_ref().unchecked_ref()));
     closure.forget();
+}
+
+fn is_logging_in(url: &Url) -> bool {
+    if let Some(url) = &url.hash {
+        if url.contains("access_token") {
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -399,8 +406,6 @@ fn authed_update(
 
             seed::push_route(Page::Home.path());
             *page = Page::Home;
-
-            orders.perform_cmd(get_spotify_profile(auth.clone()));
         }
         Msg::Queued => {}
         Msg::Played => {}
@@ -725,12 +730,10 @@ fn view(model: &Model) -> impl View<Msg> {
 }
 
 fn routes(url: Url) -> Option<Msg> {
-    let parsed_page = Page::from_url(url);
-
-    if parsed_page == Some(Page::Callback) {
+    if is_logging_in(&url) {
         Some(Msg::LoggedInSpotify)
     } else {
-        parsed_page.map(Msg::ChangePage)
+        Page::from_url(url).map(Msg::ChangePage)
     }
 }
 

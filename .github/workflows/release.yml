@@ -52,7 +52,7 @@ jobs:
       uses: actions-rs/cargo@v1
       env:
         CLIENT_ID: ${{ secrets.CLIENT_ID }}
-        REDIRECT_URI: https://spotijay.github.io/callback
+        REDIRECT_URI: https://spotijay.github.io
         SERVER_URL: spotijay.herokuapp.com
         SERVER_WS_URL: wss://spotijay.herokuapp.com/
       with:
