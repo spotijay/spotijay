@@ -764,6 +764,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f9fecfe46b5dc3cc46f58e98ba580cc714f2c93860796d002eb3527a465ef49"
 dependencies = [
+ "futures-channel",
  "gloo-events",
  "js-sys",
  "wasm-bindgen",
@@ -776,6 +777,8 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47204a46aaff920a1ea58b11d03dec6f704287d27561724a4631e450654a891f"
 dependencies = [
+ "futures-channel",
+ "futures-core",
  "js-sys",
  "wasm-bindgen",
  "web-sys",

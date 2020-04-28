@@ -22,7 +22,7 @@ wasm-bindgen = { version = "0.2.59", features = ["serde-serialize"] }
 console_error_panic_hook = "0.1.6"
 dotenv_codegen = "0.15.0"
 console_log = "0.1.2"
-gloo = "0.2.1"
+gloo = { version = "0.2.1", features = ["futures"] }
 log = "0.4.8"
 wasm-bindgen-futures = "0.4.9"
 js-sys = "0.3.37"

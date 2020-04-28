@@ -1,12 +1,12 @@
 use std::time::Duration;
 use std::{
     collections::HashMap,
+    env,
     fs::File,
     io::{self, BufReader, Error as IoError},
     net::SocketAddr,
     path::Path,
     sync::{Arc, Mutex},
-    env,
 };
 
 use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, User, Zipper};
@@ -37,8 +37,9 @@ type Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
 type Connection = r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>;
 
 struct Peer {
-    pub tx: Tx,
-    pub user_id: Option<String>,
+    tx: Tx,
+    user_id: Option<String>,
+    last_heartbeat: u64,
 }
 
 async fn handle_connection(
@@ -69,13 +70,25 @@ async fn handle_connection(
         Peer {
             tx: tx.clone(),
             user_id: None,
+            last_heartbeat: current_unix_epoch(),
         },
     );
 
     let (outgoing, incoming) = ws_stream.split();
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
-        handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr)
+        if msg == Message::text("ping") {
+            tx.unbounded_send(Message::text("pong")).unwrap();
+            peers_wrap
+                .lock()
+                .unwrap()
+                .get_mut(&addr)
+                .unwrap()
+                .last_heartbeat = current_unix_epoch();
+            future::ok(())
+        } else {
+            handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr)
+        }
     });
 
     let receive_from_others = rx.map(Ok).forward(outgoing);
@@ -476,6 +489,29 @@ fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
 
+/// Heartbeat check with a custom protocol as browsers don't support the standard WebSocket ping protocol.
+fn heartbeat_check(peers_db: PeerMap) {
+    let now = current_unix_epoch();
+    let mut peers = peers_db.lock().unwrap();
+
+    peers.retain(|_, v| {
+        if now - v.last_heartbeat < 5_000 {
+            true
+        } else {
+            v.tx.close_channel();
+
+            false
+        }
+    });
+
+    let peers_db = peers_db.clone();
+    task::spawn(async move {
+        async_std::task::sleep(Duration::from_millis(2000)).await;
+
+        heartbeat_check(peers_db);
+    });
+}
+
 fn setup_db(mut conn: rusqlite::Connection) {
     embedded::migrations::runner().run(&mut conn).unwrap();
 }
@@ -522,6 +558,8 @@ async fn run() -> Result<(), IoError> {
     let try_socket = TcpListener::bind(&url).await;
     let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", &url);
+
+    heartbeat_check(peers.clone());
 
     let init_conn = &pool.get().unwrap();
     let mut room = get_room("the_room", init_conn).unwrap().unwrap();

@@ -1,3 +1,4 @@
+use gloo::timers::future::TimeoutFuture;
 use js_sys::Function;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use shared::lib::{Input, Output, Room, Track, User};
 mod pages;
 mod spotify;
 use pages::Page;
+use wasm_bindgen_futures::spawn_local;
 
 const WS_URL: &str = dotenv_codegen::dotenv!("SERVER_WS_URL");
 
@@ -152,6 +154,23 @@ fn register_ws_handler<T, F>(
     closure.forget();
 }
 
+fn heartbeat_sender(ws: &WebSocket) {
+    if ws.ready_state() != WebSocket::OPEN {
+        // TODO: Attempt reconnect
+
+        return;
+    }
+
+    ws.send_with_str("ping").unwrap();
+
+    let ws = ws.clone();
+    spawn_local(async move {
+        TimeoutFuture::new(2_000).await;
+
+        heartbeat_sender(&ws);
+    });
+}
+
 fn is_logging_in(url: &Url) -> bool {
     if let Some(url) = &url.hash {
         if url.contains("access_token") {
@@ -179,7 +198,7 @@ enum Msg {
     ProfileFetched(seed::fetch::ResponseDataResult<spotify::SpotifyProfile>),
     LoggingInToSpotify,
     LoggedInSpotify,
-    Logout,
+    SpotifyLogout,
     Queued,
     Played,
     SearchChange(String),
@@ -189,7 +208,7 @@ enum Msg {
 
 async fn get_spotify_profile(auth: SpotifyAuth) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
-        futures::future::ok(Msg::Logout).await
+        futures::future::ok(Msg::SpotifyLogout).await
     } else {
         Request::new(SPOTIFY_PROFILE_URL)
             .header("Authorization", &format!("Bearer {}", auth.access_token))
@@ -200,7 +219,7 @@ async fn get_spotify_profile(auth: SpotifyAuth) -> Result<Msg, Msg> {
 
 async fn get_spotify_search(auth: SpotifyAuth, search: String) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
-        futures::future::ok(Msg::Logout).await
+        futures::future::ok(Msg::SpotifyLogout).await
     } else {
         let url = url::Url::parse_with_params(
             SPOTIFY_SEARCH_URL,
@@ -218,7 +237,7 @@ async fn get_spotify_search(auth: SpotifyAuth, search: String) -> Result<Msg, Ms
 
 async fn put_spotify_play(auth: SpotifyAuth, uri: String, position_ms: u32) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
-        futures::future::ok(Msg::Logout).await
+        futures::future::ok(Msg::SpotifyLogout).await
     } else {
         Request::new(SPOTIFY_PLAY_URL)
             .header("Authorization", &format!("Bearer {}", auth.access_token))
@@ -234,7 +253,7 @@ async fn put_spotify_play(auth: SpotifyAuth, uri: String, position_ms: u32) -> R
 
 async fn post_spotify_queue(auth: SpotifyAuth, uri: String) -> Result<Msg, Msg> {
     if js_sys::Date::now() as u64 > auth.expires_epoch {
-        futures::future::ok(Msg::Logout).await
+        futures::future::ok(Msg::SpotifyLogout).await
     } else {
         let url = url::Url::parse_with_params(SPOTIFY_QUEUE_URL, &[("uri", uri)])
             .unwrap()
@@ -253,9 +272,14 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             seed::push_route(page.path());
             model.page = page;
         }
-        Msg::Logout => model.data = Data::UnAuthed(UnauthedModel::default()),
+        Msg::SpotifyLogout => {}
         Msg::ServerMessage(msg_event) => {
             let txt = msg_event.data().as_string().unwrap();
+
+            if txt == "pong" {
+                return;
+            }
+
             let json: Output = serde_json::from_str(&txt).unwrap();
 
             match json {
@@ -345,7 +369,7 @@ fn unauthed_update(msg: Msg, services: &Services, unauthed_model: &mut UnauthedM
             error!("Logged in to Spotify before authenticating with Spotijay, oh no");
         }
         Msg::ChangePage(_) => {}
-        Msg::Logout => {}
+        Msg::SpotifyLogout => {}
         Msg::Connected(_) => {
             log!("WebSocket connection is open now");
         }
@@ -410,8 +434,19 @@ fn authed_update(
         Msg::Queued => {}
         Msg::Played => {}
         Msg::ChangePage(_) => {}
-        Msg::Logout => {}
+        Msg::SpotifyLogout => {
+            window()
+                .local_storage()
+                .unwrap()
+                .unwrap()
+                .remove_item("spotify_auth")
+                .unwrap();
+
+            authed_model.auth = None;
+        }
         Msg::Connected(_) => {
+            heartbeat_sender(&services.ws);
+
             services
                 .ws
                 .send_with_str(
