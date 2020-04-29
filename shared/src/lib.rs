@@ -13,6 +13,7 @@ pub mod lib {
     pub struct User {
         pub id: String,
         pub queue: Vec<Track>,
+        pub last_disconnect: Option<u64>,
     }
 
     #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
@@ -64,20 +65,23 @@ pub mod lib {
             self.before.len() + self.after.len() + 1
         }
 
-        pub fn iter<'a>(&'a self) -> Chain<Chain<Iter<'a, T>, Once<&T>>, Iter<'a, T>> {
+        pub fn iter<'a>(&'a self) -> ZipperIter<T> {
             self.before
                 .iter()
                 .chain(iter::once(&self.current))
                 .chain(self.after.iter())
         }
 
-        pub fn iter_mut<'a>(&mut self) -> Chain<Chain<IterMut<T>, Once<&mut T>>, IterMut<T>> {
+        pub fn iter_mut<'a>(&mut self) -> ZipperIterMut<T> {
             self.before
                 .iter_mut()
                 .chain(iter::once(&mut self.current))
                 .chain(self.after.iter_mut())
         }
     }
+
+    pub type ZipperIter<'a, T> = Chain<Chain<Iter<'a, T>, Once<&'a T>>, Iter<'a, T>>;
+    pub type ZipperIterMut<'a, T> = Chain<Chain<IterMut<'a, T>, Once<&'a mut T>>, IterMut<'a, T>>;
 
     impl<T> IntoIterator for Zipper<T> {
         type Item = T;

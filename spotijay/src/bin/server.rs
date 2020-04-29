@@ -36,11 +36,15 @@ type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
 type Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
 type Connection = r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>;
 
+#[derive(Debug)]
 struct Peer {
     tx: Tx,
     user_id: Option<String>,
     last_heartbeat: u64,
 }
+
+const CONNECTION_TIMEOUT: u64 = 5_000;
+const ROOM_TIMEOUT: u64 = 60_000;
 
 async fn handle_connection(
     peers_wrap: PeerMap,
@@ -77,6 +81,7 @@ async fn handle_connection(
     let (outgoing, incoming) = ws_stream.split();
 
     let broadcast_incoming = incoming.try_for_each(|msg| {
+        // Heartbeat check with a custom protocol as browsers don't support the standard WebSocket ping protocol.
         if msg == Message::text("ping") {
             tx.unbounded_send(Message::text("pong")).unwrap();
             peers_wrap
@@ -97,6 +102,33 @@ async fn handle_connection(
     future::select(broadcast_incoming, receive_from_others).await;
 
     println!("{} disconnected", &addr);
+
+    let conn = &pool.get().unwrap();
+    let user_id = peers_wrap
+        .lock()
+        .unwrap()
+        .get(&addr)
+        .unwrap()
+        .user_id
+        .clone();
+
+    if let Some(user_id) = user_id {
+        let mut room = get_room("the_room", conn).unwrap().unwrap();
+        let now = current_unix_epoch();
+
+        for user in room
+            .users
+            .iter_mut()
+            .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+        {
+            if user_id == user.id {
+                user.last_disconnect = Some(now);
+            }
+        }
+
+        update_room(room, conn).unwrap();
+    }
+
     peers_wrap.lock().unwrap().remove(&addr);
 
     Ok(())
@@ -298,6 +330,26 @@ fn update_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
     .map(|_| ())
 }
 
+fn remove_user_from_room(room: &mut Room, user_ids: Vec<String>) {
+    room.users.retain(|x| !user_ids.contains(&x.id));
+
+    if let Some(djs) = &mut room.djs {
+        djs.before.retain(|x| !user_ids.contains(&x.id));
+        djs.after.retain(|x| !user_ids.contains(&x.id));
+
+        if user_ids.contains(&djs.current.id) {
+            if djs.before.len() == 0 && djs.after.len() == 0 {
+                room.djs = None;
+            } else {
+                next_djs(djs);
+
+                djs.before.pop();
+                room.djs = Some(djs.to_owned());
+            }
+        }
+    }
+}
+
 fn _insert_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO room (id, users, playing, djs, next_up) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -489,13 +541,14 @@ fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
 
-/// Heartbeat check with a custom protocol as browsers don't support the standard WebSocket ping protocol.
-fn heartbeat_check(peers_db: PeerMap) {
+fn heartbeat_check(peers_db: PeerMap, pool: Pool) {
     let now = current_unix_epoch();
+    let conn = pool.get().unwrap();
     let mut peers = peers_db.lock().unwrap();
 
+    // Remove connections that haven't sent a heartbeat in 5 seconds.
     peers.retain(|_, v| {
-        if now - v.last_heartbeat < 5_000 {
+        if now - v.last_heartbeat < CONNECTION_TIMEOUT {
             true
         } else {
             v.tx.close_channel();
@@ -504,11 +557,35 @@ fn heartbeat_check(peers_db: PeerMap) {
         }
     });
 
+    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+    // Remove users that have been disconnected for more than 15 seconds.
+    let user_ids = room
+        .users
+        .iter_mut()
+        .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+        .filter_map(|x| {
+            if let Some(last_disconnect) = x.last_disconnect {
+                if now - last_disconnect < ROOM_TIMEOUT {
+                    None
+                } else {
+                    Some(x.id.clone())
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    remove_user_from_room(&mut room, user_ids);
+
+    update_room(room, &conn).unwrap();
+
+    let pool = pool.clone();
     let peers_db = peers_db.clone();
     task::spawn(async move {
         async_std::task::sleep(Duration::from_millis(2000)).await;
 
-        heartbeat_check(peers_db);
+        heartbeat_check(peers_db, pool);
     });
 }
 
@@ -559,11 +636,22 @@ async fn run() -> Result<(), IoError> {
     let listener = try_socket.expect("Failed to bind");
     println!("Listening on: {}", &url);
 
-    heartbeat_check(peers.clone());
+    heartbeat_check(peers.clone(), pool.clone());
 
+    let now = current_unix_epoch();
     let init_conn = &pool.get().unwrap();
     let mut room = get_room("the_room", init_conn).unwrap().unwrap();
+
     start_playing_if_theres_a_dj(&mut room, &pool, peers.clone(), current_unix_epoch());
+
+    for user in room
+        .users
+        .iter_mut()
+        .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+    {
+        user.last_disconnect = Some(now);
+    }
+
     update_room(room, init_conn).unwrap();
 
     // Let's spawn the handling of each connection in a separate task.
@@ -669,6 +757,7 @@ mod test {
         let dj = User {
             id: "test_dj".into(),
             queue: vec![track.clone()],
+            last_disconnect: Some(1234),
         };
 
         let mut room = Room {

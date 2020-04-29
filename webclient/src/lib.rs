@@ -301,7 +301,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                     let auth: Option<SpotifyAuth> = auth.map(|x| serde_json::from_str(&x).unwrap());
 
                     let auth = if let Some(auth) = auth {
-                        if auth.access_token.is_empty() {
+                        if !auth.access_token.is_empty() {
                             Some(auth)
                         } else {
                             None
@@ -324,6 +324,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                             &serde_json::to_string(&Input::JoinRoom(User {
                                 id: user_id,
                                 queue: vec![],
+                                last_disconnect: None,
                             }))
                             .unwrap(),
                         )
@@ -450,10 +451,9 @@ fn authed_update(
             services
                 .ws
                 .send_with_str(
-                    &serde_json::to_string(&Input::JoinRoom(User {
-                        id: authed_model.session.user_id.clone(),
-                        queue: vec![],
-                    }))
+                    &serde_json::to_string(&Input::Authenticate(
+                        authed_model.session.user_id.clone(),
+                    ))
                     .unwrap(),
                 )
                 .unwrap();
@@ -531,6 +531,7 @@ fn authed_update(
                         &serde_json::to_string(&Input::JoinRoom(User {
                             id: profile.id.clone(),
                             queue: vec![],
+                            last_disconnect: None,
                         }))
                         .unwrap(),
                     )
