@@ -110,24 +110,32 @@ async fn handle_connection(
         .get(&addr)
         .and_then(|x| x.user_id.clone());
 
-    if let Some(user_id) = user_id {
-        let mut room = get_room("the_room", conn).unwrap().unwrap();
-        let now = current_unix_epoch();
-
-        for user in room
-            .users
-            .iter_mut()
-            .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
-        {
-            if user_id == user.id {
-                user.last_disconnect = Some(now);
-            }
-        }
-
-        update_room(room, conn).unwrap();
-    }
-
     peers_wrap.lock().unwrap().remove(&addr);
+
+    // Add a last_disconnect for user to time them out for inactivity if their last connection has been disconnected
+    if let Some(user_id) = user_id {
+        if !peers_wrap
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, v)| v.user_id == Some(user_id.clone()))
+        {
+            let mut room = get_room("the_room", conn).unwrap().unwrap();
+            let now = current_unix_epoch();
+
+            for user in room
+                .users
+                .iter_mut()
+                .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+            {
+                if user_id == user.id {
+                    user.last_disconnect = Some(now);
+                }
+            }
+
+            update_room(room, conn).unwrap();
+        }
+    }
 
     Ok(())
 }
@@ -162,6 +170,16 @@ fn handle_message(
             }
             Input::JoinRoom(user) => {
                 let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+                // Reset room timeout for user.
+                room.users
+                    .iter_mut()
+                    .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+                    .for_each(|x| {
+                        if x.id == user.id {
+                            x.last_disconnect = None;
+                        }
+                    });
 
                 if !room.users.iter().any(|x| x.id == user.id) {
                     if let Some(djs) = &room.djs {
