@@ -23,6 +23,7 @@ const SPOTIFY_SEARCH_URL: &str = "https://api.spotify.com/v1/search";
 struct Model {
     data: Data,
     page: Page,
+    connected: bool,
     services: Services,
 }
 
@@ -110,6 +111,7 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
         AfterMount::new(Model {
             data: data,
             page: Page::Home,
+            connected: false,
             services: Services { ws, ls },
         })
     } else {
@@ -130,6 +132,7 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
         AfterMount::new(Model {
             data: data,
             page: Page::Home,
+            connected: false,
             services: Services { ws, ls },
         })
     }
@@ -268,7 +271,20 @@ async fn post_spotify_queue(auth: SpotifyAuth, uri: String) -> Result<Msg, Msg> 
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg.clone() {
+        Msg::Connected(_) => {
+            model.connected = true;
+
+            match &mut model.data {
+                Data::Authed(authed_model) => {
+                    authed_update(msg, &model.services, authed_model, &mut model.page, orders)
+                }
+                Data::UnAuthed(unauthed_model) => {
+                    unauthed_update(msg, &model.services, unauthed_model)
+                }
+            }
+        }
         Msg::Closed(_) => {
+            model.connected = false;
             log!("WebSocket connection was closed");
         }
         Msg::ChangePage(page) => {
@@ -763,10 +779,22 @@ fn data_view(data: &Data) -> Node<Msg> {
     }
 }
 
+fn global_loading_view(loading: bool) -> Node<Msg> {
+    if loading {
+        div![id!["global-loading"], h2!["Connecting"]]
+    } else {
+        empty![]
+    }
+}
+
 fn view(model: &Model) -> impl View<Msg> {
     let data = &model.data;
 
-    vec![h1!["Spotijay"], data_view(data)]
+    vec![
+        h1!["Spotijay"],
+        data_view(data),
+        global_loading_view(!model.connected),
+    ]
 }
 
 fn routes(url: Url) -> Option<Msg> {
