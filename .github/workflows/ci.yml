@@ -7,6 +7,10 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v2
+    # Necessary for now for the cargo cache:
+    # https://github.com/actions/cache/issues/133#issuecomment-599102035
+    - name: Fix ~/.cargo directory permissions
+      run: sudo chown -R $(whoami):$(id -ng) ~/.cargo/
     - name: Cache cargo registry
       uses: actions/cache@v1
       with:
@@ -25,9 +29,9 @@ jobs:
       uses: actions/cache@v1
       with:
         path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-dev-build-target-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-build-target-
+          ${{ runner.os }}-cargo-dev-build-target-
     - name: Cache cargo bin
       uses: actions/cache@v1
       with:
@@ -35,10 +39,6 @@ jobs:
         key: ${{ runner.os }}-cargo-bin-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-bin-
-    # Necessary for now for the cargo cache:
-    # https://github.com/actions/cache/issues/133#issuecomment-599102035
-    - name: Fix ~/.cargo directory permissions
-      run: sudo chown -R $(whoami):$(id -ng) ~/.cargo/
     - name: Touch env file
       run: touch .env
     - run: sudo apt-get install -y libssl-dev
