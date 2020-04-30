@@ -268,11 +268,13 @@ async fn post_spotify_queue(auth: SpotifyAuth, uri: String) -> Result<Msg, Msg> 
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg.clone() {
+        Msg::Closed(_) => {
+            log!("WebSocket connection was closed");
+        }
         Msg::ChangePage(page) => {
             seed::push_route(page.path());
             model.page = page;
         }
-        Msg::SpotifyLogout => {}
         Msg::ServerMessage(msg_event) => {
             let txt = msg_event.data().as_string().unwrap();
 
@@ -363,22 +365,8 @@ fn unauthed_update(msg: Msg, services: &Services, unauthed_model: &mut UnauthedM
         Msg::UsernameChange(user_id) => {
             unauthed_model.user_id = user_id;
         }
-        Msg::LoggingInToSpotify => {
-            error!("Loggin in to Spotify without authenticating with Spotijay, oh no");
-        }
-        Msg::LoggedInSpotify => {
-            error!("Logged in to Spotify before authenticating with Spotijay, oh no");
-        }
-        Msg::ChangePage(_) => {}
-        Msg::SpotifyLogout => {}
         Msg::Connected(_) => {
-            log!("WebSocket connection is open now");
-        }
-        Msg::Closed(_) => {
-            log!("WebSocket connection was closed");
-        }
-        Msg::Error(_) => {
-            log!("Error");
+            heartbeat_sender(&services.ws);
         }
         _ => {
             error!("Invalid Msg for unauthed user: {:?}", msg);
@@ -582,9 +570,7 @@ fn authed_update(
                 Output::Authenticated(_) => {}
             }
         }
-        Msg::Closed(_) => {
-            log!("WebSocket connection was closed");
-        }
+        Msg::Closed(_) => {}
         Msg::Error(_) => {
             log!("Error");
         }
@@ -624,10 +610,18 @@ fn users_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let room = authed_model.room.clone()?;
     let items = room.users.iter().map(|x| li![x.id]);
 
-    Some(ul![items])
+    Some(ul![class!["users-list"], items])
 }
 
 fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
+    if authed_model.auth.is_none() {
+        return Some(div![
+            id!["playlist"],
+            h3!["Your playlist"],
+            spotify_login_button()
+        ]);
+    }
+
     let mut items: Vec<Node<Msg>> = Vec::new();
 
     let tracks = current_user(&authed_model.session.user_id, authed_model.room.as_ref()?)?
@@ -638,19 +632,22 @@ fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         let event_track = track.clone();
 
         items.push(li![button![
+            class!["list-button"],
             ev(Ev::Click, move |_| Msg::RemoveTrack(event_track.id)),
             track.name
         ]]);
     }
 
     Some(div![
+        id!["playlist"],
         h3!["Your playlist"],
         input![
             attrs! {At::Value => authed_model.search},
             attrs! {At::Placeholder => "Search for tracks"},
+            attrs! {At::Type => "search"},
             input_ev(Ev::Input, Msg::SearchChange)
         ],
-        search_result_view(authed_model).unwrap_or(ol![items]),
+        search_result_view(authed_model).unwrap_or(ol![class!("playlist-list"), items]),
     ])
 }
 
@@ -677,7 +674,7 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         ]]);
     }
 
-    Some(ul![items])
+    Some(ul![class!["search-results-list"], items])
 }
 
 fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
@@ -694,6 +691,7 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
 
         for dj in djs.iter() {
             items.push(li![button![
+                class!["list-button"],
                 ev(Ev::Click, move |_| Msg::UnbecomeDj),
                 if dj.id == djs.current.id {
                     div![b![dj.id], format!(" - {}", playing)]
@@ -705,50 +703,56 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
 
         if djs.iter().any(|x| x.id != authed_model.session.user_id) {
             items.push(li![button![
+                class!["list-button"],
                 simple_ev(Ev::Click, Msg::BecomeDj),
                 "Become a DJ"
             ]]);
         }
     } else {
         items.push(li![button![
+            class!["list-button"],
             simple_ev(Ev::Click, Msg::BecomeDj),
             "Become a DJ"
         ]]);
     }
 
-    Some(div![h3!["DJs"], ol![items]])
+    Some(div![id!["djs"], h3!["DJs"], ol![class!("dj-list"), items]])
 }
 
 fn spotify_login_button() -> Node<Msg> {
     div![button![
         simple_ev(Ev::Click, Msg::LoggingInToSpotify),
-        "Log in to Spotify to listen"
+        "Log in to Spotify to listen and build a playlist"
     ]]
 }
 
 fn authed_view(authed_model: &AuthedModel) -> Node<Msg> {
     div![
-        authed_model
-            .auth
-            .as_ref()
-            .map(|_| div![])
-            .unwrap_or(spotify_login_button()),
-        djs_view(authed_model).unwrap_or(div![]),
-        playlist_view(authed_model).unwrap_or(div![]),
+        id!["app-inner"],
         div![
-            h3!["Listeners"],
-            users_view(authed_model).unwrap_or(div!["No listeners"])
+            id!["content"],
+            div![
+                id!["listeners"],
+                h3!["Listeners"],
+                users_view(authed_model).unwrap_or(div!["No listeners"]),
+            ],
+            playlist_view(authed_model).unwrap_or(div![]),
+            djs_view(authed_model).unwrap_or(div![]),
         ]
     ]
 }
 
 fn unauthed_view(_unauthed_model: &UnauthedModel) -> Node<Msg> {
     div![
-        input![
-            attrs! {At::Placeholder => "Username"},
-            input_ev(Ev::Input, Msg::UsernameChange)
-        ],
-        button![simple_ev(Ev::Click, Msg::Authenticate), "Log in"]
+        id!["app-inner"],
+        div![
+            id!["login"],
+            input![
+                attrs! {At::Placeholder => "Username"},
+                input_ev(Ev::Input, Msg::UsernameChange)
+            ],
+            button![simple_ev(Ev::Click, Msg::Authenticate), "Log in"],
+        ]
     ]
 }
 

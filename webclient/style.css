@@ -1,0 +1,195 @@
+html, h1, h2, h3, h4, h5, h6 {
+    font-family: "HelveticaNeue-Light", "Helvetica Neue Light", "Helvetica Neue", Helvetica, Arial, "Lucida Grande", sans-serif;
+    font-weight: 300;
+}
+
+html, body {
+    height: 100%;
+}
+
+body {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 0 20px;
+    position: relative;
+    background: #fdfdfd;
+}
+
+h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 500;
+    padding-top: 10px;
+}
+
+h3 {
+    font-size: 18px;
+    font-size: 14px;
+    font-weight: 400;
+    margin: 8px 0;
+}
+
+ol {
+    margin: 0;
+}
+
+button {
+    padding: 15px 30px;
+
+    border: none;
+    background: #333;
+    color: #eee;
+    border-radius: 7px;
+}
+
+button:active {
+    background: #666;
+}
+
+button:hover, button:focus {
+    background: #000;
+    color: #fff;
+}
+
+input {
+    padding: 15px 20px;
+
+    border: none;
+    border-radius: 7px;
+    background: white;
+    box-shadow: -2px 2px 5px #eee;
+}
+
+input[type=search] {
+    width: 100%;
+    padding: 15px 20px;
+
+    background: #eee;
+    box-shadow: none;
+}
+
+.list-button {
+    width: 100%;
+    padding: 20px;
+
+    text-align: left;
+    border: none;
+    border-radius: 7px;
+    background: white;
+    color: #333;
+    box-shadow: -2px 2px 5px #eee;
+}
+
+#app-inner {
+    margin-top: 30px;
+}
+
+#content {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-gap: 40px;
+    margin: 20px 0;
+}
+
+#login {
+    width: 280px;
+
+    position: absolute;
+    top: 40%;
+    transform: translateY(-50%);
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+#login input {
+    width: calc(100% - 40px);
+}
+
+#login button {
+    width: 100%;
+    margin-top: 20px;
+}
+
+.dj-list {
+    padding: 0;
+
+    list-style: none;
+}
+
+.dj-list li {
+    margin-bottom: 10px;
+}
+
+.dj-list button:hover {
+    background: #fafafa;
+    color: #333;
+}
+
+.users-list {
+    padding: 0;
+    
+    list-style: none;
+}
+
+.users-list > li {
+    padding: 5px 0;
+    
+    border-bottom: 1px solid #eee;
+}
+
+.users-list > li:last-child {
+    border-bottom: none;
+}
+
+.search-results-list, .playlist-list {
+    padding: 0;
+    margin-top: 10px;
+
+    list-style: none;
+}
+
+.search-results-list button, .playlist-list button {
+    padding: 5px;
+
+    border-radius: 0;
+    text-align: left;
+    background: transparent;
+    color: #333;
+    box-shadow: none;
+}
+
+.search-results-list button:hover, .playlist-list button:hover {
+    width: 100%;
+
+    background: #333;
+    color: #eee;
+}
+
+.search-results-list li, .playlist-list li {
+    border-bottom: 1px solid #eee;
+}
+
+.search-results-list li:last-child, .playlist-list li:last-child {
+    border-bottom: none;
+}
+
+@media (max-width: 650px) {
+    #content {
+        display: grid;
+        grid-template-columns: repeat(1, 1fr);
+        grid-gap: 40px;
+        margin: 20px 0;
+    }
+
+    #listeners {
+        order: 3;
+    }
+
+    #playlist {
+        order: 2;
+    }
+
+    #djs {
+        order: 1;
+    }
+}

@@ -108,9 +108,7 @@ async fn handle_connection(
         .lock()
         .unwrap()
         .get(&addr)
-        .unwrap()
-        .user_id
-        .clone();
+        .and_then(|x| x.user_id.clone());
 
     if let Some(user_id) = user_id {
         let mut room = get_room("the_room", conn).unwrap().unwrap();
