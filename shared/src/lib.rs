@@ -2,6 +2,7 @@ pub mod lib {
     use iter::{Chain, Once};
     use serde::{Deserialize, Serialize};
     use std::{
+        collections::HashSet,
         iter,
         slice::{Iter, IterMut},
         time::SystemTime,
@@ -31,6 +32,7 @@ pub mod lib {
         pub uri: String,
         pub duration_ms: u32,
         pub started: u64,
+        pub downvotes: HashSet<String>,
     }
 
     impl Playing {
@@ -41,6 +43,7 @@ pub mod lib {
                 uri: track.uri,
                 duration_ms: track.duration_ms,
                 started: started,
+                downvotes: HashSet::new(),
             }
         }
     }
@@ -109,15 +112,16 @@ pub mod lib {
         Authenticate(String),
         JoinRoom(User),
         BecomeDj(String),
-        UnbecomeDj(String),
         AddTrack(String, Track),
         RemoveTrack(String, String),
+        Downvote(String),
     }
 
     #[derive(Debug, Clone, Deserialize, Serialize)]
     pub enum Output {
         Authenticated(String),
         RoomState(Room),
+        Downvoted(String),
         TrackPlayed(Playing),
         NextTrackQueued(Track),
     }

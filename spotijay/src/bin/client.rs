@@ -83,17 +83,7 @@ fn main() {
 
     socket
         .write_message(Message::Text(
-            // Comment in to test "auth"
             serde_json::to_string(&Input::Authenticate("test_user_id".into())).unwrap(),
-            // serde_json::to_string(&Input::AddTrack(
-            //     "DropDuck".into(),
-            //     Track {
-            //         duration_ms: 17000,
-            //         uri: "spotify:track:7qLJdsmsNsMpUpqoTj7g9p".into(),
-            //     },
-            // ))
-            // .unwrap(),
-            //serde_json::to_string(&Input::BecomeDj("DropDuck".into())).unwrap(),
         ))
         .unwrap();
     loop {
@@ -120,6 +110,9 @@ fn main() {
             }
             Output::NextTrackQueued(track) => {
                 block_on(queue_song(track.uri));
+            }
+            Output::Downvoted(user_id) => {
+                todo!()
             }
             Output::Authenticated(user_id) => {
                 todo!()

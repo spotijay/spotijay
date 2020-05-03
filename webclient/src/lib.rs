@@ -14,7 +14,6 @@ use wasm_bindgen_futures::spawn_local;
 
 const WS_URL: &str = dotenv_codegen::dotenv!("SERVER_WS_URL");
 
-const SPOTIFY_PROFILE_URL: &str = "https://api.spotify.com/v1/me";
 const SPOTIFY_PLAY_URL: &str = "https://api.spotify.com/v1/me/player/play";
 const SPOTIFY_QUEUE_URL: &str = "https://api.spotify.com/v1/me/player/queue";
 const SPOTIFY_SEARCH_URL: &str = "https://api.spotify.com/v1/search";
@@ -189,6 +188,7 @@ fn is_logging_in(url: &Url) -> bool {
 #[derive(Debug, Clone)]
 enum Msg {
     Authenticate,
+    Downvote,
     UsernameChange(String),
     Connected(JsValue),
     ServerMessage(MessageEvent),
@@ -198,7 +198,6 @@ enum Msg {
     AddTrack(String),
     RemoveTrack(String),
     SearchFetched(seed::fetch::ResponseDataResult<spotify::SpotifySearchResult>),
-    ProfileFetched(seed::fetch::ResponseDataResult<spotify::SpotifyProfile>),
     LoggingInToSpotify,
     LoggedInSpotify,
     SpotifyLogout,
@@ -206,18 +205,6 @@ enum Msg {
     Played,
     SearchChange(String),
     BecomeDj,
-    UnbecomeDj,
-}
-
-async fn get_spotify_profile(auth: SpotifyAuth) -> Result<Msg, Msg> {
-    if js_sys::Date::now() as u64 > auth.expires_epoch {
-        futures::future::ok(Msg::SpotifyLogout).await
-    } else {
-        Request::new(SPOTIFY_PROFILE_URL)
-            .header("Authorization", &format!("Bearer {}", auth.access_token))
-            .fetch_json_data(Msg::ProfileFetched)
-            .await
-    }
 }
 
 async fn get_spotify_search(auth: SpotifyAuth, search: String) -> Result<Msg, Msg> {
@@ -400,6 +387,15 @@ fn authed_update(
     match msg {
         Msg::Authenticate => {}
         Msg::UsernameChange(_) => {}
+        Msg::Downvote => {
+            services
+                .ws
+                .send_with_str(
+                    &serde_json::to_string(&Input::Downvote(authed_model.session.user_id.clone()))
+                        .unwrap(),
+                )
+                .unwrap();
+        }
         Msg::LoggingInToSpotify => {
             window().location().set_href(&spotify::login_url()).unwrap();
         }
@@ -471,17 +467,6 @@ fn authed_update(
                 )
                 .unwrap();
         }
-        Msg::UnbecomeDj => {
-            services
-                .ws
-                .send_with_str(
-                    &serde_json::to_string(&Input::UnbecomeDj(
-                        authed_model.session.clone().user_id,
-                    ))
-                    .unwrap(),
-                )
-                .unwrap();
-        }
         Msg::AddTrack(track_id) => {
             let track = authed_model
                 .search_result
@@ -527,23 +512,6 @@ fn authed_update(
 
             authed_model.search_result = None;
         }
-        Msg::ProfileFetched(res) => match res {
-            Ok(profile) => {
-                services
-                    .ws
-                    .send_with_str(
-                        &serde_json::to_string(&Input::JoinRoom(User {
-                            id: profile.id.clone(),
-                            queue: vec![],
-                            last_disconnect: None,
-                        }))
-                        .unwrap(),
-                    )
-                    .unwrap();
-                //authed_model.profile = Some(profile)
-            }
-            Err(e) => error!("Profile error: {}", e),
-        },
         Msg::ServerMessage(msg_event) => {
             let txt = msg_event.data().as_string().unwrap();
             let json: Output = serde_json::from_str(&txt).unwrap();
@@ -581,6 +549,11 @@ fn authed_update(
                             authed_model.clone(),
                             track.uri.clone(),
                         ));
+                    }
+                }
+                Output::Downvoted(user_id) => {
+                    if let Some(Room {playing: Some(playing), .. }) = &mut authed_model.room {
+                        playing.downvotes.insert(user_id);
                     }
                 }
                 Output::Authenticated(_) => {}
@@ -701,34 +674,46 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     if let Some(djs) = djs {
         let playing = authed_model
             .room
-            .clone()
-            .and_then(|x| x.playing.map(|x| x.name))
+            .as_ref()
+            .and_then(|x| x.playing.as_ref().map(|x| x.name.clone()))
             .unwrap_or("Nothing!".to_string());
 
         for dj in djs.iter() {
-            items.push(li![button![
+            items.push(li![
                 class!["list-button"],
-                ev(Ev::Click, move |_| Msg::UnbecomeDj),
                 if dj.id == djs.current.id {
-                    div![b![dj.id], format!(" - {}", playing)]
+                    let downvoted = authed_model.room.as_ref().and_then(|x| {
+                        x.playing
+                            .as_ref()
+                            .map(|y| y.downvotes.contains(&authed_model.session.user_id))
+                    }).unwrap_or(false);
+
+                    vec![
+                        div![b![dj.id], format!(" - {}", playing)],
+                        button![
+                            simple_ev(Ev::Click, Msg::Downvote),
+                            class!["list-button-downvote", "list-button-downvote-downvoted" => downvoted],
+                            "👎"
+                        ],
+                    ]
                 } else {
-                    span![dj.id]
+                    vec![div![dj.id]]
                 }
-            ]]);
+            ]);
         }
 
         if djs.iter().any(|x| x.id != authed_model.session.user_id) {
-            items.push(li![button![
+            items.push(li![
                 class!["list-button"],
                 simple_ev(Ev::Click, Msg::BecomeDj),
-                "Become a DJ"
-            ]]);
+                div!["Become a DJ"]
+            ]);
         }
     } else {
         items.push(li![button![
             class!["list-button"],
             simple_ev(Ev::Click, Msg::BecomeDj),
-            "Become a DJ"
+            div!["Become a DJ"]
         ]]);
     }
 

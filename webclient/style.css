@@ -70,7 +70,11 @@ input[type=search] {
 
 .list-button {
     width: 100%;
-    padding: 20px;
+    padding: 0;
+    display: flex;
+    justify-content: space-between;
+
+    font-size: 12px;
 
     text-align: left;
     border: none;
@@ -78,6 +82,42 @@ input[type=search] {
     background: white;
     color: #333;
     box-shadow: -2px 2px 5px #eee;
+}
+
+.list-button-downvote {
+    padding: 20px;
+
+    border: none;
+    border-left: 1px solid #eee;
+    border-radius: 0 7px 7px 0;
+    background: transparent;
+    color: transparent;
+    text-shadow: 0 0 0 #333;
+}
+
+.list-button-downvote:hover {
+    color: transparent;
+    background: #f7f7f7;
+    text-shadow: 0 0 0 #333;
+}
+
+.list-button-downvote-downvoted {
+    color: transparent;
+    background: #555;
+    text-shadow: 0 0 0 #fdfdfd;
+}
+
+.list-button-downvote-downvoted:hover {
+    background: #333;
+    text-shadow: 0 0 0 #fdfdfd;
+}
+
+.list-button-downvote-downvoted:active {
+    background: #111;
+}
+
+.list-button > div {
+    padding: 20px;
 }
 
 #app-inner {
@@ -138,11 +178,6 @@ input[type=search] {
 
 .dj-list li {
     margin-bottom: 10px;
-}
-
-.dj-list button:hover {
-    background: #fafafa;
-    color: #333;
 }
 
 .users-list {

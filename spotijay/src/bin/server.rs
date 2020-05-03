@@ -1,6 +1,6 @@
 use std::time::Duration;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     fs::File,
     io::{self, BufReader, Error as IoError},
@@ -237,8 +237,27 @@ fn handle_message(
                         .unwrap();
                 }
             }
-            Input::UnbecomeDj(_user_id) => {
-                unimplemented!();
+            Input::Downvote(user_id) => {
+                let now = current_unix_epoch();
+                let peers = peers_wrap.clone();
+                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+
+                let song_changed = downvote(user_id.clone(), &mut room, now, pool, peers);
+                update_room(room.clone(), &conn).unwrap();
+
+                let peers = peers_wrap.lock().unwrap();
+                let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
+
+                let output = if song_changed {
+                    Output::RoomState(room)
+                } else {
+                    Output::Downvoted(user_id)
+                };
+
+                for recp in recipients {
+                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
+                        .unwrap();
+                }
             }
             Input::AddTrack(user_id, track) => {
                 let mut room = get_room("the_room", &conn).unwrap().unwrap();
@@ -470,6 +489,7 @@ fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
         uri: track.uri.clone(),
         duration_ms: track.duration_ms.clone(),
         started: now,
+        downvotes: HashSet::new(),
     };
 
     room.playing = Some(playing);
@@ -545,6 +565,34 @@ fn set_next_up_from_queue(later_pool: Pool, later_peers: PeerMap) {
     }
 
     update_room(room, &conn).unwrap();
+}
+
+/// Returns true if downvotes crossed threshold for skipping song.
+fn downvote(user_id: String, room: &mut Room, now: u64, pool: Pool, peers: PeerMap) -> bool {
+    if let Some(playing) = &mut room.playing {
+        playing.downvotes.insert(user_id);
+    }
+
+    if let Some(playing) = &room.playing {
+        let djs_len: usize = room.djs.as_ref().map(|x| x.len()).unwrap_or(0);
+
+        if playing.downvotes.len() as f64 >= ((room.users.len() + djs_len) as f64 / 2f64) {
+            room.playing = None;
+
+            if let Some(djs) = &mut room.djs {
+                next_djs(djs);
+            }
+
+            start_playing_if_theres_a_dj(room, &pool, peers.clone(), now);
+            prune_djs_without_queue(room);
+
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
 }
 
 fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
@@ -787,5 +835,92 @@ mod test {
         start_playing_if_theres_a_dj(&mut room, pool, peers, 5678);
 
         assert_eq!(room.playing, Some(Playing::new(track, 5678)));
+    }
+
+    #[test]
+    fn test_downvote() {
+        let (pool, _) = &setup_test_db("test_downvote");
+        let peers = PeerMap::new(Mutex::new(HashMap::new()));
+
+        let playing = Playing {
+            id: "currenttrack".into(),
+            name: "Cool jazz stuff".into(),
+            uri: "spotify:track:currenttrack".into(),
+            duration_ms: 16345340,
+            started: 12345,
+            downvotes: HashSet::new(),
+        };
+
+        let next_track = Track {
+            id: "nexttrack".into(),
+            name: "Rockin stuff".into(),
+            uri: "spotify:track:nexttrack".into(),
+            duration_ms: 7364629,
+        };
+
+        let other_user = User {
+            id: "other_user".into(),
+            queue: vec![],
+            last_disconnect: Some(1234),
+        };
+
+        let current_dj = User {
+            id: "current_dj".into(),
+            queue: vec![],
+            last_disconnect: Some(1234),
+        };
+
+        let next_dj = User {
+            id: "next_dj".into(),
+            queue: vec![next_track],
+            last_disconnect: Some(1234),
+        };
+
+        let mut room = Room {
+            id: "test_room".into(),
+            users: vec![other_user.clone()],
+            djs: Some(Zipper {
+                before: vec![],
+                current: current_dj.clone(),
+                after: vec![next_dj.clone()],
+            }),
+            playing: Some(playing.clone()),
+            next_up: None,
+        };
+
+        downvote(
+            "test_dj".into(),
+            &mut room,
+            734,
+            pool.clone(),
+            peers.clone(),
+        );
+        downvote("other_dj".into(), &mut room, 734, pool.clone(), peers);
+
+        let expected_playing = Playing {
+            id: "nexttrack".into(),
+            name: "Rockin stuff".into(),
+            uri: "spotify:track:nexttrack".into(),
+            duration_ms: 7364629,
+            started: 734,
+            downvotes: HashSet::new(),
+        };
+
+        let expected_room = Room {
+            id: "test_room".into(),
+            users: vec![other_user, current_dj],
+            djs: Some(Zipper {
+                before: vec![],
+                current: User {
+                    queue: vec![],
+                    ..next_dj
+                },
+                after: vec![],
+            }),
+            playing: Some(expected_playing.clone()),
+            next_up: None,
+        };
+
+        assert_eq!(room, expected_room);
     }
 }
