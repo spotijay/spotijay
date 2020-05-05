@@ -492,30 +492,42 @@ fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
         downvotes: HashSet::new(),
     };
 
+    let later_playing_id = playing.id.clone();
+
     room.playing = Some(playing);
+
     println!("Now playing: {:?} in room {:?}", track, room);
 
     let later_peers = peers.clone();
-    let later_peers2 = peers.clone();
     let later_pool = pool.clone();
-    let later_pool2 = pool.clone();
     task::spawn(async move {
         let playing_duration = Duration::from_millis(track.duration_ms as u64);
         let next_up_duration = Duration::from_millis(5000);
 
         async_std::task::sleep(playing_duration - next_up_duration).await;
 
-        set_next_up_from_queue(later_pool, later_peers);
+        // Have we changed playing song because of a downvote? If so return from this function to stop queueing.
+        let playing = get_room("the_room", &later_pool.get().unwrap()).unwrap().unwrap().playing;
+        if Some(&later_playing_id) != playing.as_ref().map(|x| &x.id) {
+            return;
+        }
 
-        task::spawn(async move {
-            async_std::task::sleep(Duration::from_millis(5000)).await;
-            play_from_next_up(later_pool2, later_peers2)
-        });
+        set_next_up_from_queue(later_pool.clone(), later_peers.clone());
+
+        async_std::task::sleep(Duration::from_millis(5000)).await;
+
+        // Have we changed playing song because of a downvote? If so return from this function to stop more playing.
+        let playing = get_room("the_room", &later_pool.get().unwrap()).unwrap().unwrap().playing;
+        if Some(later_playing_id) != playing.map(|x| x.id) {
+            return;
+        }
+
+        play_from_next_up(later_pool, later_peers)
     });
 }
 
-fn play_from_next_up(later_pool2: Pool, later_peers2: PeerMap) {
-    let conn = later_pool2.get().unwrap();
+fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) {
+    let conn = later_pool.get().unwrap();
     let mut room = get_room("the_room", &conn).unwrap().unwrap();
 
     let next_track_wrap = { room.next_up.take() };
@@ -523,8 +535,8 @@ fn play_from_next_up(later_pool2: Pool, later_peers2: PeerMap) {
     if let Some(next_track) = next_track_wrap {
         play(
             &mut room,
-            later_pool2,
-            later_peers2.clone(),
+            later_pool,
+            later_peers.clone(),
             next_track,
             current_unix_epoch(),
         );
@@ -537,7 +549,7 @@ fn play_from_next_up(later_pool2: Pool, later_peers2: PeerMap) {
     update_room(room.clone(), &conn).unwrap();
 
     send_to_all(
-        later_peers2,
+        later_peers,
         &serde_json::to_string_pretty(&Output::RoomState(room)).unwrap(),
     );
 }
