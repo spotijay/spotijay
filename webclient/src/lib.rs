@@ -15,6 +15,7 @@ use wasm_bindgen_futures::spawn_local;
 const WS_URL: &str = dotenv_codegen::dotenv!("SERVER_WS_URL");
 
 const SPOTIFY_PLAY_URL: &str = "https://api.spotify.com/v1/me/player/play";
+const SPOTIFY_NEXT_URL: &str = "https://api.spotify.com/v1/me/player/next";
 const SPOTIFY_QUEUE_URL: &str = "https://api.spotify.com/v1/me/player/queue";
 const SPOTIFY_SEARCH_URL: &str = "https://api.spotify.com/v1/search";
 
@@ -236,6 +237,18 @@ async fn put_spotify_play(auth: SpotifyAuth, uri: String, position_ms: u32) -> R
                 uris: vec![uri],
                 position_ms,
             })
+            .fetch(|_| Msg::Played)
+            .await
+    }
+}
+
+async fn post_spotify_next(auth: SpotifyAuth) -> Result<Msg, Msg> {
+    if js_sys::Date::now() as u64 > auth.expires_epoch {
+        futures::future::ok(Msg::SpotifyLogout).await
+    } else {
+        Request::new(SPOTIFY_NEXT_URL)
+            .header("Authorization", &format!("Bearer {}", auth.access_token))
+            .method(seed::browser::service::fetch::Method::Post)
             .fetch(|_| Msg::Played)
             .await
     }
@@ -535,12 +548,16 @@ fn authed_update(
                 }
                 Output::TrackPlayed(playing) => {
                     if let Some(authed_model) = &authed_model.auth {
-                        let offset_ms = (js_sys::Date::now() as u64) - playing.started;
-                        orders.perform_cmd(put_spotify_play(
-                            authed_model.clone(),
-                            playing.uri.clone(),
-                            offset_ms as u32,
-                        ));
+                        if let Some(playing) = playing {
+                            let offset_ms = (js_sys::Date::now() as u64) - playing.started;
+                            orders.perform_cmd(put_spotify_play(
+                                authed_model.clone(),
+                                playing.uri.clone(),
+                                offset_ms as u32,
+                            ));
+                        } else {
+                            orders.perform_cmd(post_spotify_next(authed_model.clone()));
+                        }
                     }
                 }
                 Output::NextTrackQueued(track) => {
@@ -552,7 +569,11 @@ fn authed_update(
                     }
                 }
                 Output::Downvoted(user_id) => {
-                    if let Some(Room {playing: Some(playing), .. }) = &mut authed_model.room {
+                    if let Some(Room {
+                        playing: Some(playing),
+                        ..
+                    }) = &mut authed_model.room
+                    {
                         playing.downvotes.insert(user_id);
                     }
                 }

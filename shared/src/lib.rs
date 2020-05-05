@@ -122,7 +122,7 @@ pub mod lib {
         Authenticated(String),
         RoomState(Room),
         Downvoted(String),
-        TrackPlayed(Playing),
+        TrackPlayed(Option<Playing>),
         NextTrackQueued(Track),
     }
 

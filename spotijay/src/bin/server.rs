@@ -249,7 +249,7 @@ fn handle_message(
                 let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                 let output = if song_changed {
-                    Output::RoomState(room)
+                    Output::TrackPlayed(room.playing)
                 } else {
                     Output::Downvoted(user_id)
                 };
@@ -432,7 +432,7 @@ fn start_playing_if_theres_a_dj(room: &mut Room, pool: &Pool, peers: PeerMap, no
 
         send_to_all(
             peers,
-            &serde_json::to_string_pretty(&Output::TrackPlayed(playing)).unwrap(),
+            &serde_json::to_string_pretty(&Output::TrackPlayed(Some(playing))).unwrap(),
         );
     }
 }

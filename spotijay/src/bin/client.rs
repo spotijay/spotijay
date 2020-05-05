@@ -105,18 +105,16 @@ fn main() {
                 db.lock().unwrap().replace(room.clone());
             }
             Output::TrackPlayed(playing) => {
-                let offset = current_unix_epoch() - playing.started;
-                block_on(play_song(playing.uri, offset as u32));
+                if let Some(playing) = playing {
+                    let offset = current_unix_epoch() - playing.started;
+                    block_on(play_song(playing.uri, offset as u32));
+                }
             }
             Output::NextTrackQueued(track) => {
                 block_on(queue_song(track.uri));
             }
-            Output::Downvoted(user_id) => {
-                todo!()
-            }
-            Output::Authenticated(user_id) => {
-                todo!()
-            }
+            Output::Downvoted(user_id) => todo!(),
+            Output::Authenticated(user_id) => todo!(),
         }
     }
 }
