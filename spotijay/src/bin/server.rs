@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, User, Zipper};
+use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, User, Zipper, prune_djs_without_queue, next_djs};
 
 use futures::{
     channel::mpsc::{unbounded, UnboundedSender},
@@ -434,51 +434,6 @@ fn start_playing_if_theres_a_dj(room: &mut Room, pool: &Pool, peers: PeerMap, no
             peers,
             &serde_json::to_string_pretty(&Output::TrackPlayed(Some(playing))).unwrap(),
         );
-    }
-}
-
-fn prune_djs_without_queue(room: &mut Room) {
-    if let Some(djs) = &mut room.djs {
-        let mut djs_without_queue = djs
-            .before
-            .clone()
-            .into_iter()
-            .chain(djs.after.clone().into_iter())
-            .filter(|x| x.queue.len() == 0)
-            .collect::<Vec<User>>();
-
-        room.users.append(&mut djs_without_queue);
-
-        djs.before.retain(|x| x.queue.len() > 0);
-        djs.after.retain(|x| x.queue.len() > 0);
-
-        if djs.current.queue.len() == 0 && room.playing.is_none() {
-            room.users.push(djs.current.clone());
-
-            if djs.before.len() == 0 && djs.after.len() == 0 {
-                room.djs = None;
-            } else {
-                next_djs(djs);
-
-                djs.before.pop();
-                room.djs = Some(djs.to_owned());
-            }
-        }
-    };
-}
-
-fn next_djs(djs: &mut Zipper<User>) {
-    if djs.before.len() == 0 && djs.after.len() == 0 {
-        ()
-    } else if djs.after.len() == 0 {
-        let next = djs.before.remove(0);
-        djs.after = djs.before.drain(..).collect();
-        djs.after.push(djs.current.clone());
-        djs.current = next;
-    } else {
-        let next = djs.after.remove(0);
-        djs.before.push(djs.current.clone());
-        djs.current = next;
     }
 }
 

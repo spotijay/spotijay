@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, WebSocket};
 
-use shared::lib::{Input, Output, Room, Track, User};
+use shared::lib::{prune_djs_without_queue, Input, Output, Room, Track, User};
 
 mod pages;
 mod spotify;
@@ -548,7 +548,7 @@ fn authed_update(
                 }
                 Output::TrackPlayed(playing) => {
                     if let Some(authed_model) = &authed_model.auth {
-                        if let Some(playing) = playing {
+                        if let Some(playing) = &playing {
                             let offset_ms = (js_sys::Date::now() as u64) - playing.started;
                             orders.perform_cmd(put_spotify_play(
                                 authed_model.clone(),
@@ -558,6 +558,12 @@ fn authed_update(
                         } else {
                             orders.perform_cmd(post_spotify_next(authed_model.clone()));
                         }
+                    }
+
+                    if let Some(room) = &mut authed_model.room {
+                        room.playing = playing;
+
+                        prune_djs_without_queue(room);
                     }
                 }
                 Output::NextTrackQueued(track) => {
