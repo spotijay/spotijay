@@ -4,3 +4,4 @@
 /target
 /webclient/site
 db.sqlite
+.env
