@@ -19,12 +19,27 @@ pub struct SpotifyProfile {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct SpotifyImage {
+    pub height: u16,
+    pub width: u16,
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct SpotifyAlbum {
+    pub id: String,
+    pub name: String,
+    pub images: Vec<SpotifyImage>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct SpotifyTrack {
     pub id: String,
     pub name: String,
     pub uri: String,
     pub duration_ms: u32,
     pub artists: Vec<SpotifyArtist>,
+    pub album: SpotifyAlbum,
 }
 
 #[derive(Debug, Deserialize, Clone)]

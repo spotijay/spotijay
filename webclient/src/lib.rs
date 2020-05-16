@@ -673,20 +673,29 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let tracks = authed_model.search_result.clone()?.tracks.items.into_iter();
 
     for track in tracks {
-        let event_track = track.clone();
+        let track_id = track.id.clone();
+        let click_event = ev(Ev::Click, move |_| Msg::AddTrack(track_id));
+        let maybe_track_image: Option<Node<Msg>> = track.album.images.last().map(|spotify_image| {
+            img![class!("track-art"),attrs![At::Src => spotify_image.url, At::Width => spotify_image.width,At::Height => spotify_image.height]]
+        });
+        let track_title = h5![class!["track-title"], track.name];
+
+        let track_artist = h6![
+            class!["track-artist"],
+            track
+                .artists
+                .iter()
+                .map(|x| x.name.to_owned())
+                .collect::<Vec<String>>()
+                .join(", ")
+        ];
 
         items.push(li![button![
-            ev(Ev::Click, move |_| Msg::AddTrack(event_track.id)),
-            format!(
-                "{} - {}",
-                track.name,
-                track
-                    .artists
-                    .iter()
-                    .map(|x| x.name.clone())
-                    .collect::<Vec<String>>()
-                    .join(", ")
-            )
+            class!["track-card"],
+            click_event,
+            maybe_track_image.unwrap_or(Node::Empty),
+            track_title,
+            track_artist,
         ]]);
     }
 
