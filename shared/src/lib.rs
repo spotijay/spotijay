@@ -18,11 +18,29 @@ pub mod lib {
     }
 
     #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
+    pub struct TrackArt {
+        pub uri: String,
+        pub height: u32,
+        pub width: u32,
+    }
+
+    impl Default for TrackArt {
+        fn default() -> Self {
+            TrackArt {
+                uri: "".to_owned(),
+                height: 0,
+                width: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
     pub struct Track {
         pub id: String,
         pub name: String,
         pub uri: String,
         pub duration_ms: u32,
+        pub artwork: TrackArt,
     }
 
     #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]

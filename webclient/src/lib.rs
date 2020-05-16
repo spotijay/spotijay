@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, WebSocket};
 
-use shared::lib::{prune_djs_without_queue, Input, Output, Room, Track, User};
+use shared::lib::{prune_djs_without_queue, Input, Output, Room, Track, TrackArt, User};
 
 mod pages;
 mod spotify;
@@ -50,6 +50,33 @@ struct UnauthedModel {
 impl Default for UnauthedModel {
     fn default() -> Self {
         UnauthedModel { user_id: "".into() }
+    }
+}
+
+impl From<spotify::SpotifyImage> for TrackArt {
+    fn from(spotify_art: spotify::SpotifyImage) -> Self {
+        TrackArt {
+            uri: spotify_art.url,
+            width: spotify_art.width,
+            height: spotify_art.height,
+        }
+    }
+}
+
+impl From<spotify::SpotifyTrack> for Track {
+    fn from(spotify_track: spotify::SpotifyTrack) -> Self {
+        Track {
+            id: spotify_track.id,
+            name: spotify_track.name,
+            uri: spotify_track.uri,
+            duration_ms: spotify_track.duration_ms,
+            artwork: spotify_track
+                .album
+                .images
+                .last()
+                .map(|x| TrackArt::from(x.to_owned()))
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -497,12 +524,7 @@ fn authed_update(
                 .send_with_str(
                     &serde_json::to_string(&Input::AddTrack(
                         authed_model.session.clone().user_id,
-                        Track {
-                            id: track.id,
-                            name: track.name,
-                            uri: track.uri,
-                            duration_ms: track.duration_ms,
-                        },
+                        Track::from(track),
                     ))
                     .unwrap(),
                 )

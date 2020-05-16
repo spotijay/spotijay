@@ -20,8 +20,8 @@ pub struct SpotifyProfile {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct SpotifyImage {
-    pub height: u16,
-    pub width: u16,
+    pub height: u32,
+    pub width: u32,
     pub url: String,
 }
 
