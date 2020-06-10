@@ -1,4 +1,6 @@
 # Spotijay
+![Release](https://github.com/spotijay/spotijay/workflows/Release/badge.svg)
+![CI](https://github.com/spotijay/spotijay/workflows/CI/badge.svg)
 
 Warning: This is a hastily done hack-job of a project. Don't judge.
 
