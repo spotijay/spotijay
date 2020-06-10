@@ -320,6 +320,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         }
         Msg::ServerMessage(msg_event) => {
             let txt = msg_event.data().as_string().unwrap();
+            
 
             if txt == "pong" {
                 return;
@@ -410,6 +411,9 @@ fn unauthed_update(msg: Msg, services: &Services, unauthed_model: &mut UnauthedM
         }
         Msg::Connected(_) => {
             heartbeat_sender(&services.ws);
+        }
+        Msg::Error(val) => {
+            error!("Msg::Error for unauthed user: {:?}", val);
         }
         _ => {
             error!("Invalid Msg for unauthed user: {:?}", msg);

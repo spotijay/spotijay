@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, User, Zipper, prune_djs_without_queue, next_djs};
+use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, TrackArt, User, Zipper, prune_djs_without_queue, next_djs};
 
 use futures::{
     channel::mpsc::{unbounded, UnboundedSender},
@@ -732,6 +732,7 @@ mod test {
             name: "Cool jazz stuff".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
+            artwork: TrackArt::default(),
         };
 
         let room = Room {
@@ -756,6 +757,7 @@ mod test {
             name: "Cool jazz stuff".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
+            artwork: TrackArt::default()
         };
 
         let room = Room {
@@ -783,6 +785,7 @@ mod test {
             name: "Cool jazz stuff".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
+            artwork: TrackArt::default(),
         };
 
         let dj = User {
@@ -823,6 +826,7 @@ mod test {
             name: "Rockin stuff".into(),
             uri: "spotify:track:nexttrack".into(),
             duration_ms: 7364629,
+            artwork: TrackArt::default(),
         };
 
         let other_user = User {
