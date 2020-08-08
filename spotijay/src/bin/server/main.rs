@@ -13,7 +13,8 @@ use std::{
 };
 
 use shared::lib::{
-    current_unix_epoch, next_djs, prune_djs_without_queue, Input, Output, Playing, Room, Track, Zipper,
+    current_unix_epoch, next_djs, prune_djs_without_queue, Input, Output, Playing, Room, Track,
+    Zipper,
 };
 
 use futures::{
@@ -33,8 +34,8 @@ use rustls::{
     Certificate, NoClientAuth, PrivateKey, ServerConfig,
 };
 
+use db::{get_room, remove_user_from_room, update_room};
 use r2d2_sqlite::SqliteConnectionManager;
-use db::{update_room, get_room, remove_user_from_room};
 
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
@@ -506,7 +507,7 @@ fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
 
-fn heartbeat_check(peers_db: PeerMap, pool: Pool) -> Result<(), Box<dyn Error>> {
+fn heartbeat_check_helper(peers_db: PeerMap, pool: Pool) -> Result<(), Box<dyn Error>> {
     let now = current_unix_epoch()?;
     let conn = pool.get()?;
     let mut peers = peers_db.lock().unwrap();
@@ -545,15 +546,17 @@ fn heartbeat_check(peers_db: PeerMap, pool: Pool) -> Result<(), Box<dyn Error>> 
 
     update_room(room, &conn)?;
 
-    let pool = pool.clone();
-    let peers_db = peers_db.clone();
-    task::spawn(async move {
-        async_std::task::sleep(Duration::from_millis(2000)).await;
-
-        heartbeat_check(peers_db, pool).unwrap();
-    });
-
     Ok(())
+}
+
+fn heartbeat_check(peers_db: PeerMap, pool: Pool) {
+    task::spawn(async move {
+        loop {
+            heartbeat_check_helper(peers_db.clone(), pool.clone()).unwrap();
+
+            async_std::task::sleep(Duration::from_millis(2000)).await;
+        }
+    });
 }
 
 fn setup_db(mut conn: rusqlite::Connection) -> Result<(), refinery::Error> {
@@ -598,7 +601,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(&url).await?;
     println!("Listening on: {}", &url);
 
-    heartbeat_check(peers.clone(), pool.clone())?;
+    heartbeat_check(peers.clone(), pool.clone());
 
     let now = current_unix_epoch()?;
     let init_conn = &pool.get()?;
