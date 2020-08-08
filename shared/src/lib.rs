@@ -5,7 +5,7 @@ pub mod lib {
         collections::HashSet,
         iter,
         slice::{Iter, IterMut},
-        time::SystemTime,
+        time::{SystemTime, SystemTimeError},
         vec::IntoIter,
     };
 
@@ -144,11 +144,12 @@ pub mod lib {
         NextTrackQueued(Track),
     }
 
-    pub fn current_unix_epoch() -> u64 {
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
+    pub fn current_unix_epoch() -> Result<u64, SystemTimeError> {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_millis() as u64;
+
+        Ok(now)
     }
 
     pub fn next_djs(djs: &mut Zipper<User>) {

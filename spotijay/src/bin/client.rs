@@ -106,7 +106,7 @@ fn main() {
             }
             Output::TrackPlayed(playing) => {
                 if let Some(playing) = playing {
-                    let offset = current_unix_epoch() - playing.started;
+                    let offset = current_unix_epoch().unwrap() - playing.started;
                     block_on(play_song(playing.uri, offset as u32));
                 }
             }

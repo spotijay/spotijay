@@ -1,15 +1,20 @@
+mod db;
+
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
     env,
+    error::Error,
     fs::File,
-    io::{self, BufReader, Error as IoError},
+    io::{self, BufReader},
     net::SocketAddr,
     path::Path,
     sync::{Arc, Mutex},
 };
 
-use shared::lib::{current_unix_epoch, Input, Output, Playing, Room, Track, TrackArt, User, Zipper, prune_djs_without_queue, next_djs};
+use shared::lib::{
+    current_unix_epoch, next_djs, prune_djs_without_queue, Input, Output, Playing, Room, Track, Zipper,
+};
 
 use futures::{
     channel::mpsc::{unbounded, UnboundedSender},
@@ -29,7 +34,7 @@ use rustls::{
 };
 
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{self, params, OptionalExtension};
+use db::{update_room, get_room, remove_user_from_room};
 
 type Tx = UnboundedSender<Message>;
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, Peer>>>;
@@ -52,20 +57,18 @@ async fn handle_connection(
     acceptor: &Option<TlsAcceptor>,
     addr: SocketAddr,
     pool: Pool,
-) -> Result<(), ()> {
+) -> Result<(), Box<dyn Error>> {
     println!("Incoming TCP connection from: {}", addr);
 
     let stream = if let Some(acceptor) = acceptor {
-        let tls_stream = acceptor.accept(raw_stream).await.unwrap();
+        let tls_stream = acceptor.accept(raw_stream).await?;
 
         async_tungstenite::stream::Stream::Tls(tls_stream)
     } else {
         async_tungstenite::stream::Stream::Plain(raw_stream)
     };
 
-    let ws_stream = async_tungstenite::accept_async(stream)
-        .await
-        .map_err(|_| ())?;
+    let ws_stream = async_tungstenite::accept_async(stream).await?;
 
     // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
@@ -74,7 +77,7 @@ async fn handle_connection(
         Peer {
             tx: tx.clone(),
             user_id: None,
-            last_heartbeat: current_unix_epoch(),
+            last_heartbeat: current_unix_epoch()?,
         },
     );
 
@@ -89,10 +92,12 @@ async fn handle_connection(
                 .unwrap()
                 .get_mut(&addr)
                 .unwrap()
-                .last_heartbeat = current_unix_epoch();
+                .last_heartbeat = current_unix_epoch().unwrap();
             future::ok(())
         } else {
-            handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr)
+            handle_message(pool.clone(), peers_wrap.clone(), tx.clone(), msg, addr).unwrap();
+
+            future::ok(())
         }
     });
 
@@ -103,7 +108,7 @@ async fn handle_connection(
 
     println!("{} disconnected", &addr);
 
-    let conn = &pool.get().unwrap();
+    let conn = &pool.get()?;
     let user_id = peers_wrap
         .lock()
         .unwrap()
@@ -120,8 +125,8 @@ async fn handle_connection(
             .iter()
             .any(|(_, v)| v.user_id == Some(user_id.clone()))
         {
-            let mut room = get_room("the_room", conn).unwrap().unwrap();
-            let now = current_unix_epoch();
+            let mut room = get_room("the_room", conn)?.unwrap();
+            let now = current_unix_epoch()?;
 
             for user in room
                 .users
@@ -133,7 +138,7 @@ async fn handle_connection(
                 }
             }
 
-            update_room(room, conn).unwrap();
+            update_room(room, conn)?;
         }
     }
 
@@ -146,9 +151,9 @@ fn handle_message(
     tx: UnboundedSender<Message>,
     msg: Message,
     addr: SocketAddr,
-) -> futures::future::Ready<Result<(), tungstenite::error::Error>> {
-    let input: Result<Input, serde_json::Error> = serde_json::from_str(msg.to_text().unwrap());
-    let conn = pool.get().unwrap();
+) -> Result<(), Box<dyn Error>> {
+    let input: Result<Input, serde_json::Error> = serde_json::from_str(msg.to_text()?);
+    let conn = pool.get()?;
 
     if let Err(e) = input {
         println!(
@@ -162,14 +167,11 @@ fn handle_message(
                 peers_wrap.lock().unwrap().get_mut(&addr).unwrap().user_id = Some(user_id.clone());
 
                 tx.unbounded_send(
-                    serde_json::to_string_pretty(&Output::Authenticated(user_id))
-                        .unwrap()
-                        .into(),
-                )
-                .unwrap();
+                    serde_json::to_string_pretty(&Output::Authenticated(user_id))?.into(),
+                )?;
             }
             Input::JoinRoom(user) => {
-                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+                let mut room = get_room("the_room", &conn)?.unwrap();
 
                 // Reset room timeout for user.
                 room.users
@@ -191,17 +193,12 @@ fn handle_message(
                     }
                 }
 
-                update_room(room.clone(), &conn).unwrap();
+                update_room(room.clone(), &conn)?;
 
-                tx.unbounded_send(
-                    serde_json::to_string_pretty(&Output::RoomState(room))
-                        .unwrap()
-                        .into(),
-                )
-                .unwrap();
+                tx.unbounded_send(serde_json::to_string_pretty(&Output::RoomState(room))?.into())?;
             }
             Input::BecomeDj(user_id) => {
-                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+                let mut room = get_room("the_room", &conn)?.unwrap();
 
                 let user = room.users.iter().find(|x| x.id == user_id);
 
@@ -223,27 +220,26 @@ fn handle_message(
                     &mut room,
                     &pool,
                     peers_wrap.clone(),
-                    current_unix_epoch(),
+                    current_unix_epoch()?,
                 );
 
-                update_room(room, &conn).unwrap();
+                update_room(room, &conn)?;
 
                 let peers = peers_wrap.lock().unwrap();
                 let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                 for recp in recipients {
-                    let output = Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
-                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                        .unwrap();
+                    let output = Output::RoomState(get_room("the_room", &conn)?.unwrap());
+                    recp.unbounded_send(serde_json::to_string_pretty(&output)?.into())?;
                 }
             }
             Input::Downvote(user_id) => {
-                let now = current_unix_epoch();
+                let now = current_unix_epoch()?;
                 let peers = peers_wrap.clone();
-                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+                let mut room = get_room("the_room", &conn)?.unwrap();
 
                 let song_changed = downvote(user_id.clone(), &mut room, now, pool, peers);
-                update_room(room.clone(), &conn).unwrap();
+                update_room(room.clone(), &conn)?;
 
                 let peers = peers_wrap.lock().unwrap();
                 let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
@@ -255,12 +251,11 @@ fn handle_message(
                 };
 
                 for recp in recipients {
-                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                        .unwrap();
+                    recp.unbounded_send(serde_json::to_string_pretty(&output)?.into())?;
                 }
             }
             Input::AddTrack(user_id, track) => {
-                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+                let mut room = get_room("the_room", &conn)?.unwrap();
 
                 if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
                     this_user.queue.push(track.clone());
@@ -276,22 +271,21 @@ fn handle_message(
                     &mut room,
                     &pool,
                     peers_wrap.clone(),
-                    current_unix_epoch(),
+                    current_unix_epoch()?,
                 );
 
-                update_room(room, &conn).unwrap();
+                update_room(room, &conn)?;
 
                 let peers = peers_wrap.lock().unwrap();
                 let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                 for recp in recipients {
-                    let output = Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
-                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                        .unwrap();
+                    let output = Output::RoomState(get_room("the_room", &conn)?.unwrap());
+                    recp.unbounded_send(serde_json::to_string_pretty(&output)?.into())?;
                 }
             }
             Input::RemoveTrack(user_id, track_id) => {
-                let mut room = get_room("the_room", &conn).unwrap().unwrap();
+                let mut room = get_room("the_room", &conn)?.unwrap();
 
                 if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
                     this_user.queue.retain(|x| x.id != track_id);
@@ -309,94 +303,23 @@ fn handle_message(
                     &mut room,
                     &pool,
                     peers_wrap.clone(),
-                    current_unix_epoch(),
+                    current_unix_epoch()?,
                 );
 
-                update_room(room, &conn).unwrap();
+                update_room(room, &conn)?;
 
                 let peers = peers_wrap.lock().unwrap();
                 let recipients = peers.iter().map(|(_, peer)| peer.tx.clone());
 
                 for recp in recipients {
-                    let output = Output::RoomState(get_room("the_room", &conn).unwrap().unwrap());
-                    recp.unbounded_send(serde_json::to_string_pretty(&output).unwrap().into())
-                        .unwrap();
+                    let output = Output::RoomState(get_room("the_room", &conn)?.unwrap());
+                    recp.unbounded_send(serde_json::to_string_pretty(&output)?.into())?;
                 }
             }
         }
     }
 
-    future::ok(())
-}
-
-fn get_room(room_id: &str, conn: &Connection) -> rusqlite::Result<Option<Room>> {
-    let mut stmt =
-        conn.prepare("SELECT id, users, playing, djs, next_up FROM room WHERE room.id = ?")?;
-    let res = stmt.query_row(params![room_id], |row| {
-        let id: String = row.get(0)?;
-        let users = serde_json::from_value(row.get(1)?).unwrap();
-        let playing = serde_json::from_value(row.get(2)?).unwrap();
-        let djs = serde_json::from_value(row.get(3)?).unwrap();
-        let next_up = serde_json::from_value(row.get(4)?).unwrap();
-
-        Ok(Room {
-            id: id,
-            users: users,
-            playing: playing,
-            djs: djs,
-            next_up: next_up,
-        })
-    });
-
-    res.optional()
-}
-
-fn update_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE room SET id = ?1, users = ?2, playing = ?3, djs = ?4, next_up = ?5",
-        params![
-            room.id,
-            serde_json::to_value(room.users).unwrap(),
-            serde_json::to_value(room.playing).unwrap(),
-            serde_json::to_value(room.djs).unwrap(),
-            serde_json::to_value(room.next_up).unwrap(),
-        ],
-    )
-    .map(|_| ())
-}
-
-fn remove_user_from_room(room: &mut Room, user_ids: Vec<String>) {
-    room.users.retain(|x| !user_ids.contains(&x.id));
-
-    if let Some(djs) = &mut room.djs {
-        djs.before.retain(|x| !user_ids.contains(&x.id));
-        djs.after.retain(|x| !user_ids.contains(&x.id));
-
-        if user_ids.contains(&djs.current.id) {
-            if djs.before.len() == 0 && djs.after.len() == 0 {
-                room.djs = None;
-            } else {
-                next_djs(djs);
-
-                djs.before.pop();
-                room.djs = Some(djs.to_owned());
-            }
-        }
-    }
-}
-
-fn _insert_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT INTO room (id, users, playing, djs, next_up) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            room.id,
-            serde_json::to_value(room.users).unwrap(),
-            serde_json::to_value(room.playing).unwrap(),
-            serde_json::to_value(room.djs).unwrap(),
-            serde_json::to_value(room.next_up).unwrap(),
-        ],
-    )
-    .map(|_| ())
+    Ok(())
 }
 
 fn send_to_all(peers: PeerMap, data: &String) {
@@ -437,6 +360,36 @@ fn start_playing_if_theres_a_dj(room: &mut Room, pool: &Pool, peers: PeerMap, no
     }
 }
 
+async fn things(
+    later_playing_id: String,
+    track: Track,
+    peers: PeerMap,
+    pool: Pool,
+) -> Result<(), Box<dyn Error>> {
+    let playing_duration = Duration::from_millis(track.duration_ms as u64);
+    let next_up_duration = Duration::from_millis(5000);
+
+    async_std::task::sleep(playing_duration - next_up_duration).await;
+
+    // Have we changed playing song because of a downvote? If so return from this function to stop queueing.
+    let playing = get_room("the_room", &pool.get()?)?.unwrap().playing;
+    if Some(&later_playing_id) != playing.as_ref().map(|x| &x.id) {
+        return Ok(());
+    }
+
+    set_next_up_from_queue(pool.clone(), peers.clone())?;
+
+    async_std::task::sleep(Duration::from_millis(5000)).await;
+
+    // Have we changed playing song because of a downvote? If so return from this function to stop more playing.
+    let playing = get_room("the_room", &pool.get()?)?.unwrap().playing;
+    if Some(later_playing_id) != playing.map(|x| x.id) {
+        return Ok(());
+    }
+
+    play_from_next_up(pool, peers)
+}
+
 fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
     let playing = Playing {
         id: track.id.clone(),
@@ -455,35 +408,12 @@ fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
 
     let later_peers = peers.clone();
     let later_pool = pool.clone();
-    task::spawn(async move {
-        let playing_duration = Duration::from_millis(track.duration_ms as u64);
-        let next_up_duration = Duration::from_millis(5000);
-
-        async_std::task::sleep(playing_duration - next_up_duration).await;
-
-        // Have we changed playing song because of a downvote? If so return from this function to stop queueing.
-        let playing = get_room("the_room", &later_pool.get().unwrap()).unwrap().unwrap().playing;
-        if Some(&later_playing_id) != playing.as_ref().map(|x| &x.id) {
-            return;
-        }
-
-        set_next_up_from_queue(later_pool.clone(), later_peers.clone());
-
-        async_std::task::sleep(Duration::from_millis(5000)).await;
-
-        // Have we changed playing song because of a downvote? If so return from this function to stop more playing.
-        let playing = get_room("the_room", &later_pool.get().unwrap()).unwrap().unwrap().playing;
-        if Some(later_playing_id) != playing.map(|x| x.id) {
-            return;
-        }
-
-        play_from_next_up(later_pool, later_peers)
-    });
+    task::spawn(async move { things(later_playing_id, track, later_peers, later_pool) });
 }
 
-fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) {
-    let conn = later_pool.get().unwrap();
-    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) -> Result<(), Box<dyn Error>> {
+    let conn = later_pool.get()?;
+    let mut room = get_room("the_room", &conn)?.unwrap();
 
     let next_track_wrap = { room.next_up.take() };
 
@@ -493,7 +423,7 @@ fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) {
             later_pool,
             later_peers.clone(),
             next_track,
-            current_unix_epoch(),
+            current_unix_epoch()?,
         );
     } else {
         room.playing = None;
@@ -501,17 +431,19 @@ fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) {
 
     prune_djs_without_queue(&mut room);
 
-    update_room(room.clone(), &conn).unwrap();
+    update_room(room.clone(), &conn)?;
 
     send_to_all(
         later_peers,
-        &serde_json::to_string_pretty(&Output::RoomState(room)).unwrap(),
+        &serde_json::to_string_pretty(&Output::RoomState(room))?,
     );
+
+    Ok(())
 }
 
-fn set_next_up_from_queue(later_pool: Pool, later_peers: PeerMap) {
-    let conn = later_pool.get().unwrap();
-    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+fn set_next_up_from_queue(later_pool: Pool, later_peers: PeerMap) -> Result<(), Box<dyn Error>> {
+    let conn = later_pool.get()?;
+    let mut room = get_room("the_room", &conn)?.unwrap();
 
     if let Some(djs) = &mut room.djs {
         next_djs(djs);
@@ -527,11 +459,13 @@ fn set_next_up_from_queue(later_pool: Pool, later_peers: PeerMap) {
     if let Some(next) = room.next_up.clone() {
         send_to_all(
             later_peers,
-            &serde_json::to_string_pretty(&Output::NextTrackQueued(next)).unwrap(),
+            &serde_json::to_string_pretty(&Output::NextTrackQueued(next))?,
         );
     }
 
-    update_room(room, &conn).unwrap();
+    update_room(room, &conn)?;
+
+    Ok(())
 }
 
 /// Returns true if downvotes crossed threshold for skipping song.
@@ -572,9 +506,9 @@ fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
 
-fn heartbeat_check(peers_db: PeerMap, pool: Pool) {
-    let now = current_unix_epoch();
-    let conn = pool.get().unwrap();
+fn heartbeat_check(peers_db: PeerMap, pool: Pool) -> Result<(), Box<dyn Error>> {
+    let now = current_unix_epoch()?;
+    let conn = pool.get()?;
     let mut peers = peers_db.lock().unwrap();
 
     // Remove connections that haven't sent a heartbeat in 5 seconds.
@@ -588,7 +522,7 @@ fn heartbeat_check(peers_db: PeerMap, pool: Pool) {
         }
     });
 
-    let mut room = get_room("the_room", &conn).unwrap().unwrap();
+    let mut room = get_room("the_room", &conn)?.unwrap();
     // Remove users that have been disconnected for more than 15 seconds.
     let user_ids = room
         .users
@@ -609,19 +543,21 @@ fn heartbeat_check(peers_db: PeerMap, pool: Pool) {
 
     remove_user_from_room(&mut room, user_ids);
 
-    update_room(room, &conn).unwrap();
+    update_room(room, &conn)?;
 
     let pool = pool.clone();
     let peers_db = peers_db.clone();
     task::spawn(async move {
         async_std::task::sleep(Duration::from_millis(2000)).await;
 
-        heartbeat_check(peers_db, pool);
+        heartbeat_check(peers_db, pool).unwrap();
     });
+
+    Ok(())
 }
 
-fn setup_db(mut conn: rusqlite::Connection) {
-    embedded::migrations::runner().run(&mut conn).unwrap();
+fn setup_db(mut conn: rusqlite::Connection) -> Result<(), refinery::Error> {
+    embedded::migrations::runner().run(&mut conn)
 }
 
 mod embedded {
@@ -629,17 +565,17 @@ mod embedded {
     embed_migrations!("migrations");
 }
 
-async fn run() -> Result<(), IoError> {
+async fn run() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
     dotenv::dotenv().ok();
 
     let manager = SqliteConnectionManager::file("./db.sqlite");
     //let manager = SqliteConnectionManager::memory();
-    let pool = r2d2::Pool::new(manager).unwrap();
+    let pool = r2d2::Pool::new(manager)?;
 
-    let migrate_conn = rusqlite::Connection::open("./db.sqlite").unwrap();
-    setup_db(migrate_conn);
+    let migrate_conn = rusqlite::Connection::open("./db.sqlite")?;
+    setup_db(migrate_conn)?;
 
     let peers = PeerMap::new(Mutex::new(HashMap::new()));
 
@@ -649,31 +585,26 @@ async fn run() -> Result<(), IoError> {
     let ssl_key = env::var("SSL_KEY");
 
     let acceptor = if ssl_cert.is_ok() && ssl_key.is_ok() {
-        let certs = load_certs(Path::new(&ssl_cert.unwrap())).unwrap();
-        let mut keys = load_keys(Path::new(&ssl_key.unwrap())).unwrap();
-        config.set_single_cert(certs, keys.remove(0)).unwrap();
+        let certs = load_certs(Path::new(&ssl_cert?))?;
+        let mut keys = load_keys(Path::new(&ssl_key?))?;
+        config.set_single_cert(certs, keys.remove(0))?;
 
         Some(TlsAcceptor::from(Arc::new(config)))
     } else {
         None
     };
 
-    let url = format!(
-        "{}:{}",
-        env::var("SERVER_URL").unwrap(),
-        env::var("PORT").unwrap()
-    );
-    let try_socket = TcpListener::bind(&url).await;
-    let listener = try_socket.expect("Failed to bind");
+    let url = format!("{}:{}", env::var("SERVER_URL")?, env::var("PORT")?);
+    let listener = TcpListener::bind(&url).await?;
     println!("Listening on: {}", &url);
 
-    heartbeat_check(peers.clone(), pool.clone());
+    heartbeat_check(peers.clone(), pool.clone())?;
 
-    let now = current_unix_epoch();
-    let init_conn = &pool.get().unwrap();
-    let mut room = get_room("the_room", init_conn).unwrap().unwrap();
+    let now = current_unix_epoch()?;
+    let init_conn = &pool.get()?;
+    let mut room = get_room("the_room", init_conn)?.unwrap();
 
-    start_playing_if_theres_a_dj(&mut room, &pool, peers.clone(), current_unix_epoch());
+    start_playing_if_theres_a_dj(&mut room, &pool, peers.clone(), now);
 
     for user in room
         .users
@@ -683,7 +614,7 @@ async fn run() -> Result<(), IoError> {
         user.last_disconnect = Some(now);
     }
 
-    update_room(room, init_conn).unwrap();
+    update_room(room, init_conn)?;
 
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
@@ -691,19 +622,24 @@ async fn run() -> Result<(), IoError> {
         let acceptor = acceptor.clone();
         let pool = pool.clone();
 
-        task::spawn(async move { handle_connection(peers, stream, &acceptor, addr, pool).await });
+        task::spawn(async move {
+            handle_connection(peers, stream, &acceptor, addr, pool)
+                .await
+                .unwrap()
+        });
     }
 
     Ok(())
 }
 
-fn main() -> Result<(), IoError> {
+fn main() -> Result<(), Box<dyn Error>> {
     task::block_on(run())
 }
 
 #[cfg(test)]
 mod test {
     use crate::*;
+    use shared::lib::{TrackArt, User};
 
     fn setup_test_db(
         db_name: &str,
@@ -718,7 +654,7 @@ mod test {
 
         let migrate_conn = rusqlite::Connection::open(path).unwrap();
 
-        setup_db(migrate_conn);
+        setup_db(migrate_conn).unwrap();
 
         (pool, conn)
     }
@@ -757,7 +693,7 @@ mod test {
             name: "Cool jazz stuff".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
-            artwork: TrackArt::default()
+            artwork: TrackArt::default(),
         };
 
         let room = Room {
@@ -772,7 +708,7 @@ mod test {
 
         let res = get_room("test_room", conn);
 
-        assert_eq!(res, Ok(Some(room)));
+        assert_eq!(res.unwrap(), Some(room));
     }
 
     #[test]
