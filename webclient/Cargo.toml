@@ -14,22 +14,22 @@ wasm-bindgen-test = "0.3"
 
 [dependencies]
 shared = {path = "../shared"}
-url = "2.1.0"
-futures = "0.3.4"
-serde = { version = "1.0.104", features = ["derive"] }
-serde_json = "1.0.48"
-wasm-bindgen = { version = "0.2.59", features = ["serde-serialize"] }
+url = "2.1.1"
+futures = "0.3.5"
+serde = { version = "1.0.114", features = ["derive"] }
+serde_json = "1.0.57"
+wasm-bindgen = { version = "0.2.67", features = ["serde-serialize"] }
 console_error_panic_hook = "0.1.6"
 dotenv_codegen = "0.15.0"
-console_log = "0.1.2"
+console_log = "0.2.0"
 gloo = { version = "0.2.1", features = ["futures"] }
-log = "0.4.8"
-wasm-bindgen-futures = "0.4.9"
-js-sys = "0.3.37"
-seed = "0.6.0"
+log = "0.4.11"
+wasm-bindgen-futures = "0.4.17"
+js-sys = "0.3.44"
+seed = "0.7.0"
 
 [dependencies.web-sys]
-version = "0.3.36"
+version = "0.3.44"
 features = [
     "Window",
     "Location",

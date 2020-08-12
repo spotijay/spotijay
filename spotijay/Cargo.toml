@@ -13,15 +13,15 @@ name = "client"
 shared = {path = "../shared"}
 
 log = "0.4"
-url = "2.1.0"
+url = "2.1.1"
 dotenv = "0.15.0"
 env_logger = "0.7"
-futures = "0.3.4"
+futures = "0.3.5"
 futures-timer = "3.0.2"
-async-std = "1.5.0"
+async-std = "1.6.2"
 
-serde = { version = "1.0.104", features = ["derive"] }
-serde_json = "1.0.48"
+serde = { version = "1.0.114", features = ["derive"] }
+serde_json = "1.0.56"
 
 r2d2 = "0.8.8"
 r2d2_sqlite = {git = "https://github.com/edmellum/r2d2-sqlite", branch = "patch-1"}

@@ -14,11 +14,9 @@ impl Page {
 
     pub fn from_url(url: Url) -> Option<Page> {
         Page::from_path(
-            url.hash
-                .unwrap_or("".into())
+            url.hash()
+                .unwrap_or(&String::default())
                 .split("/")
-                .collect::<Vec<&str>>()
-                .into_iter()
                 .collect::<Vec<&str>>(),
         )
     }
@@ -33,7 +31,10 @@ impl Page {
 
 impl From<Page> for Url {
     fn from(page: Page) -> Self {
-        page.path().into()
+        let url = Url::current();
+        match page {
+            Page::Home => url,
+        }
     }
 }
 
@@ -48,11 +49,7 @@ mod tests {
 
     #[test]
     fn test_page_from_url() {
-        let empty: Vec<&str> = vec![];
-        let path: Vec<Url> = vec![
-            Url::new(empty.clone()).hash("this/should/fail"),
-            Url::new(empty),
-        ];
+        let path: Vec<Url> = vec![Url::new().add_hash_path_part("thisshouldfail"), Url::new()];
         assert_eq!(
             path.iter()
                 .map(|x| Page::from_url(x.to_owned()))

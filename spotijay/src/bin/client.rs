@@ -113,8 +113,8 @@ fn main() {
             Output::NextTrackQueued(track) => {
                 block_on(queue_song(track.uri));
             }
-            Output::Downvoted(user_id) => todo!(),
-            Output::Authenticated(user_id) => todo!(),
+            Output::Downvoted(_user_id) => todo!(),
+            Output::Authenticated(_user_id) => todo!(),
         }
     }
 }
