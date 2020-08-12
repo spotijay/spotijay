@@ -36,6 +36,7 @@ struct AuthedModel {
     session: Session,
     auth: Option<SpotifyAuth>,
     search: String,
+    search_debounce: Option<seed::app::cmd_manager::CmdHandle>,
     room: Option<Room>,
     search_result: Option<spotify::SpotifySearchResult>,
 }
@@ -95,6 +96,7 @@ impl AuthedModel {
             session: session,
             auth: None,
             search: "".into(),
+            search_debounce: None,
             room: None,
             search_result: None,
         }
@@ -191,6 +193,7 @@ enum AuthenticatedMsg {
     RemoveTrack(String),
     ServerMessage(Output),
     SearchChange(String),
+    Search,
     SearchFetched(spotify::SpotifySearchResult),
 }
 
@@ -289,10 +292,10 @@ async fn post_spotify_queue(auth: SpotifyAuth, uri: String) -> Result<Msg, Msg> 
     }
 }
 
-fn unwrap_msg(result: Result<Msg,Msg>) -> Msg {
+fn unwrap_msg(result: Result<Msg, Msg>) -> Msg {
     match result {
         Ok(msg) => msg,
-        Err(msg) => msg
+        Err(msg) => msg,
     }
 }
 
@@ -526,23 +529,26 @@ fn authed_update(
                 track_id,
             )) {
                 Ok(()) => authed_model.search_result = None,
-                Err(ws_error) => error!("AuthenticatedMsg::RemoveTrack",ws_error),
+                Err(ws_error) => error!("AuthenticatedMsg::RemoveTrack", ws_error),
             }
         }
         AuthenticatedMsg::ServerMessage(output) => match output {
             Output::RoomState(room) => {
                 if let None = authed_model.room {
                     if let Some(playing) = &room.playing {
-                        if let Some(authed_model) = &authed_model.auth {
+                        if let Some(spotify_auth) = &authed_model.auth {
                             let offset_ms = (js_sys::Date::now() as u64) - playing.started;
-                            let cloned_authed_model = authed_model.clone();
+                            let cloned_spotify_auth = spotify_auth.clone();
                             let playing_uri = playing.uri.clone();
-                            orders.perform_cmd(async move { 
-                                unwrap_msg(put_spotify_play(
-                                cloned_authed_model,
-                                playing_uri,
-                                offset_ms as u32,
-                                ).await)
+                            orders.perform_cmd(async move {
+                                unwrap_msg(
+                                    put_spotify_play(
+                                        cloned_spotify_auth,
+                                        playing_uri,
+                                        offset_ms as u32,
+                                    )
+                                    .await,
+                                )
                             });
                         }
                     }
@@ -551,22 +557,25 @@ fn authed_update(
                 authed_model.room = Some(room);
             }
             Output::TrackPlayed(playing) => {
-                if let Some(authed_model) = &authed_model.auth {
+                if let Some(spotify_auth) = &authed_model.auth {
                     if let Some(playing) = &playing {
                         let offset_ms = (js_sys::Date::now() as u64) - playing.started;
-                        let cloned_authed_model = authed_model.clone();
+                        let cloned_spotify_auth = spotify_auth.clone();
                         let playing_uri = playing.uri.clone();
                         orders.perform_cmd(async move {
-                            unwrap_msg(put_spotify_play(
-                                cloned_authed_model,
-                                playing_uri,
-                                offset_ms as u32,
-                            ).await)
+                            unwrap_msg(
+                                put_spotify_play(
+                                    cloned_spotify_auth,
+                                    playing_uri,
+                                    offset_ms as u32,
+                                )
+                                .await,
+                            )
                         });
                     } else {
-                        let cloned_authed_model = authed_model.clone();
+                        let cloned_spotify_auth = spotify_auth.clone();
                         orders.perform_cmd(async {
-                            unwrap_msg(post_spotify_next(cloned_authed_model).await)
+                            unwrap_msg(post_spotify_next(cloned_spotify_auth).await)
                         });
                     }
                 }
@@ -578,11 +587,11 @@ fn authed_update(
                 }
             }
             Output::NextTrackQueued(track) => {
-                if let Some(authed_model) = &authed_model.auth {
-                    let cloned_authed_model = authed_model.clone();
+                if let Some(spotify_auth) = &authed_model.auth {
+                    let cloned_spotify_auth = spotify_auth.clone();
                     let track_uri = track.uri.clone();
                     orders.perform_cmd(async {
-                        unwrap_msg(post_spotify_queue(cloned_authed_model, track_uri).await)
+                        unwrap_msg(post_spotify_queue(cloned_spotify_auth, track_uri).await)
                     });
                 }
             }
@@ -601,17 +610,32 @@ fn authed_update(
             authed_model.search = val.clone();
 
             if !val.is_empty() {
-                if let Some(authed_model) = &authed_model.auth {
-                    let cloned_authed_model = authed_model.clone();
-                    let cloned_val = val.clone();
-                    orders.perform_cmd(async {
-                        unwrap_msg(get_spotify_search(cloned_authed_model, cloned_val).await)
-                    });
+                if let Some(_) = &authed_model.auth {
+                    let search_handle = orders.perform_cmd_with_handle(cmds::timeout(500, || {
+                        Msg::Authenticated(AuthenticatedMsg::Search)
+                    }));
+                    authed_model.search_debounce = Some(search_handle);
                 }
             } else {
+                authed_model.search_debounce = None;
                 authed_model.search_result = None;
             }
         }
+        AuthenticatedMsg::Search => {
+            if !authed_model.search.is_empty() {
+                if let Some(spotify_auth) = &authed_model.auth {
+                    let cloned_spotify_auth = spotify_auth.clone();
+                    let cloned_search = authed_model.search.clone();
+                    orders.perform_cmd(async {
+                        unwrap_msg(get_spotify_search(cloned_spotify_auth, cloned_search).await)
+                    });
+                }
+            } else {
+                authed_model.search_debounce = None;
+                authed_model.search_result = None;
+            }
+        }
+
         AuthenticatedMsg::SearchFetched(search_results) => {
             authed_model.search_result = Some(search_results)
         }
@@ -855,3 +879,4 @@ pub fn start() {
         .routes(routes)
         .build_and_start();
 }
+
