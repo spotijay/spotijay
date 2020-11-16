@@ -12,6 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use log::error;
 use shared::lib::{
     current_unix_epoch, next_djs, prune_djs_without_queue, Input, Output, Playing, Room, Track,
     Zipper,
@@ -629,7 +630,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         task::spawn(async move {
             handle_connection(peers, stream, &acceptor, addr, pool)
                 .await
-                .unwrap()
+                .unwrap_or_else(|e| error!("Error on connection: {}", e))
         });
     }
 
