@@ -1,6 +1,6 @@
-use rusqlite::{params};
-use shared::lib::{next_djs, Room};
 use crate::Connection;
+use rusqlite::params;
+use shared::lib::{next_djs, Room};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

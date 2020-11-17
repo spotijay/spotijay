@@ -1,5 +1,5 @@
+use seed::browser::url::UrlSearch;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 #[derive(Serialize)]
 pub struct PlayRequest {
@@ -58,15 +58,19 @@ pub struct SpotifyArtist {
 }
 
 pub fn login_url() -> String {
-    Url::parse_with_params(
+    let search = UrlSearch::new(vec![
+        ("client_id", vec![dotenv_codegen::dotenv!("CLIENT_ID")]),
+        ("response_type", vec!["token"]),
+        (
+            "redirect_uri",
+            vec![dotenv_codegen::dotenv!("REDIRECT_URI")],
+        ),
+        ("scope", vec!["user-modify-playback-state"]),
+    ]);
+
+    [
         "https://accounts.spotify.com/authorize",
-        &[
-            ("client_id", dotenv_codegen::dotenv!("CLIENT_ID")),
-            ("response_type", "token"),
-            ("redirect_uri", dotenv_codegen::dotenv!("REDIRECT_URI")),
-            ("scope", "user-modify-playback-state"),
-        ],
-    )
-    .unwrap()
-    .to_string()
+        &search.to_string(),
+    ]
+    .join("?")
 }

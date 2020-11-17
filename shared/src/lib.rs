@@ -38,6 +38,7 @@ pub mod lib {
     pub struct Track {
         pub id: String,
         pub name: String,
+        pub artist: String,
         pub uri: String,
         pub duration_ms: u32,
         pub artwork: TrackArt,
@@ -47,6 +48,7 @@ pub mod lib {
     pub struct Playing {
         pub id: String,
         pub name: String,
+        pub artist: String,
         pub uri: String,
         pub duration_ms: u32,
         pub started: u64,
@@ -58,6 +60,7 @@ pub mod lib {
             Playing {
                 id: track.id,
                 name: track.name,
+                artist: track.artist,
                 uri: track.uri,
                 duration_ms: track.duration_ms,
                 started: started,

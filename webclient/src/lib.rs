@@ -1,8 +1,10 @@
 use gloo::timers::future::TimeoutFuture;
+use seed::browser::url::Url;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use shared::lib::{prune_djs_without_queue, Input, Output, Room, Track, TrackArt, User};
+use shared::lib::{prune_djs_without_queue, Input, Output, Playing, Room, Track, TrackArt, User};
 
 mod pages;
 mod spotify;
@@ -44,11 +46,15 @@ struct AuthedModel {
 #[derive(Debug)]
 struct UnauthedModel {
     user_id: String,
+    error: Option<String>,
 }
 
 impl Default for UnauthedModel {
     fn default() -> Self {
-        UnauthedModel { user_id: "".into() }
+        UnauthedModel {
+            user_id: "".into(),
+            error: None,
+        }
     }
 }
 
@@ -67,6 +73,12 @@ impl From<spotify::SpotifyTrack> for Track {
         Track {
             id: spotify_track.id,
             name: spotify_track.name,
+            artist: spotify_track
+                .artists
+                .into_iter()
+                .map(|x| x.name)
+                .collect::<Vec<String>>()
+                .join(", "),
             uri: spotify_track.uri,
             duration_ms: spotify_track.duration_ms,
             artwork: spotify_track
@@ -108,13 +120,11 @@ struct Services {
     ws: Arc<WebSocket>,
 }
 
-fn before_mount(_: Url) -> BeforeMount {
-    // Since we have the "loading..." text in the app section of index.html,
-    // we use MountType::Takover which will overwrite it with the seed generated html
-    BeforeMount::new().mount_type(MountType::Takeover)
-}
+fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
+    orders
+        .subscribe(Msg::UrlChanged)
+        .notify(subs::UrlChanged(url.clone()));
 
-fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     let ws = WebSocket::builder(WS_URL, orders)
         .on_open(|| Msg::WebSocketConnected)
         .on_close(|x| Msg::Closed(x))
@@ -131,29 +141,34 @@ fn after_mount(url: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     };
 
     if is_logging_in(&url) {
-        AfterMount::new(Model {
-            data: data,
-            page: Page::Home,
-            connected: false,
-            services: Services { ws: Arc::new(ws) },
-        })
+        match get_auth_from_url(&url) {
+            None => {
+                panic!("Init: Failed to parse auth from url {}", url);
+            }
+            Some(auth) => {
+                LocalStorage::insert("spotify_auth", &auth).ok();
+                if let Data::Authed(authed_model) = &mut data {
+                    authed_model.auth = Some(auth);
+                }
+            }
+        }
     } else {
         let auth: Option<SpotifyAuth> = LocalStorage::get("spotify_auth").ok();
 
         if let Data::Authed(authed_model) = &mut data {
             if let Some(auth) = auth {
-                if !auth.access_token.is_empty() {
+                if !auth.access_token.is_empty() || !has_login_expired(&auth.expires_epoch) {
                     authed_model.auth = Some(auth);
-                };
+                }
             };
         };
+    }
 
-        AfterMount::new(Model {
-            data: data,
-            page: Page::Home,
-            connected: false,
-            services: Services { ws: Arc::new(ws) },
-        })
+    Model {
+        data: data,
+        page: Page::Home,
+        connected: false,
+        services: Services { ws: Arc::new(ws) },
     }
 }
 
@@ -185,7 +200,6 @@ fn has_login_expired(expires_epoch: &u64) -> bool {
 #[derive(Debug)]
 enum AuthenticatedMsg {
     Downvote,
-    LoggedInSpotify(SpotifyAuth),
     SpotifyLogout,
     WebSocketConnected,
     BecomeDj,
@@ -199,16 +213,15 @@ enum AuthenticatedMsg {
 
 #[derive(Debug)]
 enum Msg {
+    UrlChanged(subs::UrlChanged),
     Authenticate,
     LoggingInToSpotify,
-    LoggedInSpotify,
     Authenticated(AuthenticatedMsg),
     UsernameChange(String),
     WebSocketConnected,
     ServerMessage(WebSocketMessage),
     Closed(CloseEvent),
     Error,
-    ChangePage(Page),
     Queued,
     Played,
     LogError(String),
@@ -218,12 +231,8 @@ async fn get_spotify_search(auth: SpotifyAuth, search: String) -> Result<Msg, Ms
     if has_login_expired(&auth.expires_epoch) {
         futures::future::ok(Msg::Authenticated(AuthenticatedMsg::SpotifyLogout)).await
     } else {
-        let url = url::Url::parse_with_params(
-            SPOTIFY_SEARCH_URL,
-            &[("q", search), ("type", "track".into())],
-        )
-        .unwrap()
-        .into_string();
+        let search = UrlSearch::new(vec![("q", vec![search]), ("type", vec!["track".into()])]);
+        let url = [SPOTIFY_SEARCH_URL, &search.to_string()].join("?");
 
         Request::new(url)
             .header(Header::bearer(&auth.access_token))
@@ -278,9 +287,8 @@ async fn post_spotify_queue(auth: SpotifyAuth, uri: String) -> Result<Msg, Msg> 
     if has_login_expired(&auth.expires_epoch) {
         futures::future::ok(Msg::Authenticated(AuthenticatedMsg::SpotifyLogout)).await
     } else {
-        let url = url::Url::parse_with_params(SPOTIFY_QUEUE_URL, &[("uri", uri)])
-            .unwrap()
-            .into_string();
+        let search = UrlSearch::new(vec![("uri", vec![uri])]);
+        let url = [SPOTIFY_QUEUE_URL, &search.to_string()].join("?");
 
         Request::new(url)
             .header(Header::bearer(auth.access_token))
@@ -301,6 +309,12 @@ fn unwrap_msg(result: Result<Msg, Msg>) -> Msg {
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg {
+        Msg::UrlChanged(subs::UrlChanged(url)) => {
+            log!("UrlChanged:", &url);
+            if is_logging_in(&url) {
+                Url::new().go_and_replace();
+            }
+        }
         Msg::WebSocketConnected => {
             model.connected = true;
             heartbeat_sender(model.services.ws.clone());
@@ -310,7 +324,6 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                     AuthenticatedMsg::WebSocketConnected,
                     &model.services,
                     authed_model,
-                    &mut model.page,
                     orders,
                 ),
                 Data::UnAuthed(_) => (),
@@ -320,51 +333,8 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             model.connected = false;
             error!("WebSocket connection was closed", error);
         }
-        Msg::ChangePage(page) => {
-            seed::push_route(page.clone());
-            model.page = page;
-        }
         Msg::LoggingInToSpotify => {
-            window().location().set_href(&spotify::login_url()).unwrap();
-        }
-        Msg::LoggedInSpotify => {
-            let url =
-                url::Url::parse(&window().location().href().unwrap().replace("#", "?")).unwrap();
-            let query_pairs = url.query_pairs();
-            let access_token = query_pairs
-                .clone()
-                .find(|x| x.0 == "access_token")
-                .unwrap()
-                .1
-                .into_owned();
-
-            let expires_in = query_pairs
-                .clone()
-                .find(|x| x.0 == "expires_in")
-                .unwrap()
-                .1
-                .into_owned();
-
-            let expires_epoch =
-                js_sys::Date::now() as u64 + (expires_in.parse::<u64>().unwrap() * 1000);
-
-            let auth = SpotifyAuth {
-                access_token,
-                expires_epoch: expires_epoch,
-            };
-
-            LocalStorage::insert("spotify_auth", &auth).ok();
-
-            match &mut model.data {
-                Data::Authed(auth_model) => authed_update(
-                    AuthenticatedMsg::LoggedInSpotify(auth),
-                    &model.services,
-                    auth_model,
-                    &mut model.page,
-                    orders,
-                ),
-                Data::UnAuthed(_) => (),
-            }
+            Url::go_and_load_with_str(&spotify::login_url());
         }
         Msg::ServerMessage(msg_event) => {
             let txt = msg_event.text().unwrap();
@@ -372,7 +342,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             if txt == "pong" {
                 return;
             }
-
+            log!("ServerMessage", txt);
             let output: Output = serde_json::from_str(&txt).unwrap();
 
             match output {
@@ -416,25 +386,15 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                     Data::UnAuthed(_) => (),
                     Data::Authed(authed_model) => {
                         let sub_msg = AuthenticatedMsg::ServerMessage(output);
-                        authed_update(
-                            sub_msg,
-                            &model.services,
-                            authed_model,
-                            &mut model.page,
-                            orders,
-                        )
+                        authed_update(sub_msg, &model.services, authed_model, orders)
                     }
                 },
             }
         }
         Msg::Authenticated(sub_msg) => match &mut model.data {
-            Data::Authed(authed_model) => authed_update(
-                sub_msg,
-                &model.services,
-                authed_model,
-                &mut model.page,
-                orders,
-            ),
+            Data::Authed(authed_model) => {
+                authed_update(sub_msg, &model.services, authed_model, orders)
+            }
             Data::UnAuthed(_) => (),
         },
         _ => match &mut model.data {
@@ -444,13 +404,43 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     };
 }
 
+fn get_auth_from_url(url: &Url) -> Option<SpotifyAuth> {
+    let mut query_params = HashMap::new();
+
+    for a in url.hash()?.split('&') {
+        let mut b = a.split('=').into_iter();
+        match (b.next(), b.last()) {
+            (Some(key), Some(val)) => {
+                query_params.insert(key, val);
+            }
+            _ => {}
+        }
+    }
+
+    let access_token = query_params.get("access_token").map(|x| x.to_string());
+
+    let expires_epoch = query_params
+        .get("expires_in")
+        .and_then(|x| x.parse::<u64>().ok())
+        .map(|x| (x * 1_000) + (js_sys::Date::now() as u64));
+
+    access_token.zip(expires_epoch).map(|(x, y)| SpotifyAuth {
+        access_token: x,
+        expires_epoch: y,
+    })
+}
+
 fn unauthed_update(msg: Msg, services: &Services, unauthed_model: &mut UnauthedModel) {
     match msg {
         Msg::Authenticate => {
-            services
-                .ws
-                .send_json(&Input::Authenticate(unauthed_model.user_id.clone()))
-                .unwrap();
+            if unauthed_model.user_id.trim().is_empty() {
+                unauthed_model.error = Some("Username cannot be blank".to_owned());
+            } else {
+                services
+                    .ws
+                    .send_json(&Input::Authenticate(unauthed_model.user_id.clone()))
+                    .unwrap();
+            }
         }
         Msg::UsernameChange(user_id) => {
             unauthed_model.user_id = user_id.clone();
@@ -468,7 +458,6 @@ fn authed_update(
     msg: AuthenticatedMsg,
     services: &Services,
     authed_model: &mut AuthedModel,
-    page: &mut Page,
     orders: &mut impl Orders<Msg>,
 ) {
     match msg {
@@ -477,12 +466,6 @@ fn authed_update(
                 .ws
                 .send_json(&Input::Downvote(authed_model.session.user_id.clone()))
                 .unwrap();
-        }
-        AuthenticatedMsg::LoggedInSpotify(spotify_auth) => {
-            authed_model.auth = Some(spotify_auth);
-
-            seed::push_route(Page::Home);
-            *page = Page::Home;
         }
         AuthenticatedMsg::SpotifyLogout => {
             LocalStorage::remove("spotify_auth").unwrap();
@@ -660,7 +643,7 @@ fn users_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let room = authed_model.room.clone()?;
     let items = room.users.iter().map(|x| li![&x.id]);
 
-    Some(ul![class!["users-list"], items])
+    Some(ul![C!["users-list"], items])
 }
 
 fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
@@ -682,11 +665,12 @@ fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         let event_track = track.clone();
 
         items.push(li![button![
-            class!["list-button"],
+            C!["list-button"],
             ev(Ev::Click, move |_| Msg::Authenticated(
                 AuthenticatedMsg::RemoveTrack(event_track.id)
             )),
-            track.name
+            format!("{} - {}", track.artist, track.name),
+            " ❌"
         ]]);
     }
 
@@ -701,7 +685,7 @@ fn playlist_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
                 AuthenticatedMsg::SearchChange(x)
             ))
         ],
-        search_result_view(authed_model).unwrap_or(ol![class!("playlist-list"), items]),
+        search_result_view(authed_model).unwrap_or(ol![C!["playlist-list"], items]),
     ])
 }
 
@@ -716,12 +700,12 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
             Msg::Authenticated(AuthenticatedMsg::AddTrack(track_id))
         });
         let maybe_track_image: Option<Node<Msg>> = track.album.images.last().map(|spotify_image| {
-            img![class!("track-art"),attrs![At::Src => spotify_image.url, At::Width => spotify_image.width,At::Height => spotify_image.height]]
+            img![C!["track-art"],attrs![At::Src => spotify_image.url, At::Width => spotify_image.width,At::Height => spotify_image.height]]
         });
-        let track_title = h5![class!["track-title"], track.name];
+        let track_title = h5![C!["track-title"], track.name];
 
         let track_artist = h6![
-            class!["track-artist"],
+            C!["track-artist"],
             track
                 .artists
                 .iter()
@@ -731,7 +715,7 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         ];
 
         items.push(li![button![
-            class!["track-card"],
+            C!["track-card"],
             click_event,
             maybe_track_image.unwrap_or(Node::Empty),
             track_title,
@@ -739,7 +723,7 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         ]]);
     }
 
-    Some(ul![class!["search-results-list"], items])
+    Some(ul![C!["search-results-list"], items])
 }
 
 fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
@@ -748,39 +732,15 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     let djs = authed_model.room.clone().and_then(|x| x.djs);
 
     if let Some(djs) = djs {
-        let playing = authed_model
-            .room
-            .as_ref()
-            .and_then(|x| x.playing.as_ref().map(|x| x.name.clone()))
-            .unwrap_or("Nothing!".to_string());
-
         for dj in djs.iter() {
-            items.push(li![
-                class!["list-button"],
-                if dj.id == djs.current.id {
-                    let downvoted = authed_model.room.as_ref().and_then(|x| {
-                        x.playing
-                            .as_ref()
-                            .map(|y| y.downvotes.contains(&authed_model.session.user_id))
-                    }).unwrap_or(false);
-
-                    vec![
-                        div![b![&dj.id], format!(" - {}", playing)],
-                        button![
-                            ev(Ev::Click, |_| Msg::Authenticated(AuthenticatedMsg::Downvote)),
-                            class!["list-button-downvote", "list-button-downvote-downvoted" => downvoted],
-                            "👎"
-                        ],
-                    ]
-                } else {
-                    vec![div![&dj.id]]
-                }
-            ]);
+            if dj.id != djs.current.id {
+                items.push(li![C!["list-button"], div![&dj.id],]);
+            }
         }
 
-        if djs.iter().any(|x| x.id != authed_model.session.user_id) {
+        if djs.iter().all(|x| x.id != authed_model.session.user_id) {
             items.push(li![
-                class!["list-button"],
+                C!["list-button"],
                 ev(Ev::Click, |_| Msg::Authenticated(
                     AuthenticatedMsg::BecomeDj
                 )),
@@ -789,7 +749,7 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         }
     } else {
         items.push(li![button![
-            class!["list-button"],
+            C!["list-button"],
             ev(Ev::Click, |_| Msg::Authenticated(
                 AuthenticatedMsg::BecomeDj
             )),
@@ -797,7 +757,7 @@ fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
         ]]);
     }
 
-    Some(div![id!["djs"], h3!["DJs"], ol![class!("dj-list"), items]])
+    Some(div![id!["djs"], h3!["DJs"], ol![C!["dj-list"], items]])
 }
 
 fn spotify_login_button() -> Node<Msg> {
@@ -808,8 +768,12 @@ fn spotify_login_button() -> Node<Msg> {
 }
 
 fn authed_view(authed_model: &AuthedModel) -> Node<Msg> {
+    let opt_playing = authed_model.room.as_ref().and_then(|x| x.playing.clone());
+
     div![
         id!["app-inner"],
+        header(authed_model.room.as_ref()),
+        now_playing(&authed_model.session.user_id, opt_playing.as_ref()),
         div![
             id!["content"],
             div![
@@ -823,60 +787,72 @@ fn authed_view(authed_model: &AuthedModel) -> Node<Msg> {
     ]
 }
 
+fn header(opt_room: Option<&Room>) -> Node<Msg> {
+    let opt_current_user = opt_room
+        .and_then(|x| x.djs.as_ref())
+        .map(|x| x.current.clone());
+    if let Some(user) = opt_current_user {
+        h1![b![user.id], " is Spotijaying 😎"]
+    } else {
+        h1!["Spotijay"]
+    }
+}
+
+fn now_playing(user_id: &str, opt_playing: Option<&Playing>) -> Node<Msg> {
+    if let Some(playing) = opt_playing {
+        let downvoted = playing.downvotes.contains(user_id);
+
+        div![
+            button![
+                ev(Ev::Click, |_| Msg::Authenticated(
+                    AuthenticatedMsg::Downvote
+                )),
+                C![
+                    "button-downvote",
+                    IF!(downvoted => "button-downvote-downvoted")
+                ],
+                "👎"
+            ],
+            format!("🎧 {} - {} 🎧", playing.artist, playing.name)
+        ]
+    } else {
+        empty!()
+    }
+}
+
 fn unauthed_view(_unauthed_model: &UnauthedModel) -> Node<Msg> {
     div![
         id!["app-inner"],
         div![
             id!["login"],
+            h1![C!["login-title"], "Spotijay"],
             input![
                 attrs! {At::Placeholder => "Username"},
                 input_ev(Ev::Input, Msg::UsernameChange)
             ],
             button![ev(Ev::Click, |_| Msg::Authenticate), "Log in"],
+            if let Some(error) = _unauthed_model.error.as_ref() {
+                p![error]
+            } else {
+                empty!()
+            }
         ]
     ]
 }
 
-fn data_view(data: &Data) -> Node<Msg> {
-    match &data {
-        Data::Authed(authed) => authed_view(authed),
-        Data::UnAuthed(unauthed_model) => unauthed_view(unauthed_model),
-    }
-}
-
-fn global_loading_view(loading: bool) -> Node<Msg> {
-    if loading {
+fn view(model: &Model) -> impl IntoNodes<Msg> {
+    if !model.connected {
         div![id!["global-loading"], h2!["Connecting"]]
     } else {
-        empty![]
-    }
-}
-
-fn view(model: &Model) -> impl IntoNodes<Msg> {
-    let data = &model.data;
-
-    vec![
-        h1!["Spotijay"],
-        data_view(data),
-        global_loading_view(!model.connected),
-    ]
-}
-
-fn routes(url: Url) -> Option<Msg> {
-    if is_logging_in(&url) {
-        Some(Msg::LoggedInSpotify)
-    } else {
-        Page::from_url(url).map(Msg::ChangePage)
+        match &model.data {
+            Data::Authed(authed) => authed_view(authed),
+            Data::UnAuthed(unauthed_model) => unauthed_view(unauthed_model),
+        }
     }
 }
 
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
-    App::builder(update, view)
-        .before_mount(before_mount)
-        .after_mount(after_mount)
-        .routes(routes)
-        .build_and_start();
+    App::start("app", init, update, view);
 }
-

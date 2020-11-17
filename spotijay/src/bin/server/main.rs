@@ -395,6 +395,7 @@ fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
     let playing = Playing {
         id: track.id.clone(),
         name: track.name.clone(),
+        artist: track.artist.clone(),
         uri: track.uri.clone(),
         duration_ms: track.duration_ms.clone(),
         started: now,
@@ -669,6 +670,7 @@ mod test {
         let test_track = Track {
             id: "sa67saf64s".into(),
             name: "Cool jazz stuff".into(),
+            artist: "Jazzist".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
             artwork: TrackArt::default(),
@@ -694,6 +696,7 @@ mod test {
         let test_track = Track {
             id: "sa67saf64s".into(),
             name: "Cool jazz stuff".into(),
+            artist: "Jazzist".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
             artwork: TrackArt::default(),
@@ -722,6 +725,7 @@ mod test {
         let track = Track {
             id: "sa67saf64s".into(),
             name: "Cool jazz stuff".into(),
+            artist: "Jazzist".into(),
             uri: "spotify:track:sa67saf64s".into(),
             duration_ms: 16345340,
             artwork: TrackArt::default(),
@@ -754,6 +758,7 @@ mod test {
         let playing = Playing {
             id: "currenttrack".into(),
             name: "Cool jazz stuff".into(),
+            artist: "Jazzist".into(),
             uri: "spotify:track:currenttrack".into(),
             duration_ms: 16345340,
             started: 12345,
@@ -763,6 +768,7 @@ mod test {
         let next_track = Track {
             id: "nexttrack".into(),
             name: "Rockin stuff".into(),
+            artist: "BeetleJuice".into(),
             uri: "spotify:track:nexttrack".into(),
             duration_ms: 7364629,
             artwork: TrackArt::default(),
@@ -810,6 +816,7 @@ mod test {
         let expected_playing = Playing {
             id: "nexttrack".into(),
             name: "Rockin stuff".into(),
+            artist: "BeetleJuice".into(),
             uri: "spotify:track:nexttrack".into(),
             duration_ms: 7364629,
             started: 734,

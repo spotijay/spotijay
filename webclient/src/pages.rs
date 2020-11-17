@@ -1,4 +1,4 @@
-use seed::Url;
+use seed::browser::url::Url;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Page {

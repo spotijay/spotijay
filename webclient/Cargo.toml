@@ -14,7 +14,6 @@ wasm-bindgen-test = "0.3"
 
 [dependencies]
 shared = {path = "../shared"}
-url = "2.1.1"
 futures = "0.3.5"
 serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.57"
@@ -26,7 +25,7 @@ gloo = { version = "0.2.1", features = ["futures"] }
 log = "0.4.11"
 wasm-bindgen-futures = "0.4.17"
 js-sys = "0.3.44"
-seed = "0.7.0"
+seed = "0.8.0"
 
 [dependencies.web-sys]
 version = "0.3.44"

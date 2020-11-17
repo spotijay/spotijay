@@ -17,7 +17,7 @@ body {
 
 h1 {
     margin: 0;
-    font-size: 16px;
+    font-size: 32px;
     font-weight: 500;
     padding-top: 10px;
 }
@@ -84,35 +84,29 @@ input[type=search] {
     box-shadow: -2px 2px 5px #eee;
 }
 
-.list-button-downvote {
+.button-downvote {
     padding: 20px;
-
-    border: none;
-    border-left: 1px solid #eee;
-    border-radius: 0 7px 7px 0;
+    font-size: 16px;
     background: transparent;
-    color: transparent;
     text-shadow: 0 0 0 #333;
 }
 
-.list-button-downvote:hover {
-    color: transparent;
+.button-downvote:hover {
     background: #f7f7f7;
     text-shadow: 0 0 0 #333;
 }
 
-.list-button-downvote-downvoted {
-    color: transparent;
+.button-downvote-downvoted {
     background: #555;
     text-shadow: 0 0 0 #fdfdfd;
 }
 
-.list-button-downvote-downvoted:hover {
+.button-downvote-downvoted:hover {
     background: #333;
     text-shadow: 0 0 0 #fdfdfd;
 }
 
-.list-button-downvote-downvoted:active {
+.button-downvote-downvoted:active {
     background: #111;
 }
 
@@ -135,10 +129,15 @@ input[type=search] {
     width: 280px;
 
     position: absolute;
-    top: 40%;
+    top: 30%;
     transform: translateY(-50%);
     left: 50%;
     transform: translateX(-50%);
+}
+#login .login-title {
+    font-size: 32px;
+    margin-bottom: 40px;
+    text-align: center;
 }
 
 #login input {
