@@ -626,17 +626,11 @@ fn authed_update(
 }
 
 fn current_user(user_id: &str, room: &Room) -> Option<User> {
-    if let Some(djs) = &room.djs {
-        djs.iter()
-            .chain(room.users.iter())
-            .find(|x| x.id == user_id)
-            .map(|x| x.clone())
-    } else {
-        room.users
-            .iter()
-            .find(|x| x.id == user_id)
-            .map(|x| x.clone())
-    }
+    room.djs
+        .iter()
+        .chain(room.users.iter())
+        .find(|x| x.id == user_id)
+        .cloned()
 }
 
 fn users_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
@@ -726,35 +720,21 @@ fn search_result_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
     Some(ul![C!["search-results-list"], items])
 }
 
-fn djs_view(authed_model: &AuthedModel) -> Option<Node<Msg>> {
+fn djs_view(room: &Room, session: &Session) -> Option<Node<Msg>> {
     let mut items: Vec<Node<Msg>> = Vec::new();
 
-    let djs = authed_model.room.clone().and_then(|x| x.djs);
+    for dj in room.djs.iter() {
+        items.push(li![div![&dj.id]]);
+    }
 
-    if let Some(djs) = djs {
-        for dj in djs.iter() {
-            if dj.id != djs.current.id {
-                items.push(li![C!["list-button"], div![&dj.id],]);
-            }
-        }
-
-        if djs.iter().all(|x| x.id != authed_model.session.user_id) {
-            items.push(li![
-                C!["list-button"],
-                ev(Ev::Click, |_| Msg::Authenticated(
-                    AuthenticatedMsg::BecomeDj
-                )),
-                div!["Become a DJ"]
-            ]);
-        }
-    } else {
-        items.push(li![button![
+    if !room.djs.iter().any(|x| x.id == session.user_id) {
+        items.push(li![
             C!["list-button"],
             ev(Ev::Click, |_| Msg::Authenticated(
                 AuthenticatedMsg::BecomeDj
             )),
             div!["Become a DJ"]
-        ]]);
+        ]);
     }
 
     Some(div![id!["djs"], h3!["DJs"], ol![C!["dj-list"], items]])
@@ -782,15 +762,18 @@ fn authed_view(authed_model: &AuthedModel) -> Node<Msg> {
                 users_view(authed_model).unwrap_or(div!["No listeners"]),
             ],
             playlist_view(authed_model).unwrap_or(div![]),
-            djs_view(authed_model).unwrap_or(div![]),
+            authed_model
+                .room
+                .as_ref()
+                .and_then(|x| djs_view(x, &authed_model.session))
+                .unwrap_or(div![]),
         ]
     ]
 }
 
 fn header(opt_room: Option<&Room>) -> Node<Msg> {
     let opt_current_user = opt_room
-        .and_then(|x| x.djs.as_ref())
-        .map(|x| x.current.clone());
+        .and_then(|x| x.djs.front().cloned());
     if let Some(user) = opt_current_user {
         h1![b![user.id], " is Spotijaying 😎"]
     } else {

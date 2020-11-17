@@ -12,10 +12,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use log::error;
+use log::{error, info};
 use shared::lib::{
     current_unix_epoch, next_djs, prune_djs_without_queue, Input, Output, Playing, Room, Track,
-    Zipper,
 };
 
 use futures::{
@@ -59,7 +58,7 @@ async fn handle_connection(
     acceptor: &Option<TlsAcceptor>,
     addr: SocketAddr,
     pool: Pool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     println!("Incoming TCP connection from: {}", addr);
 
     let stream = if let Some(acceptor) = acceptor {
@@ -130,11 +129,7 @@ async fn handle_connection(
             let mut room = get_room("the_room", conn)?.unwrap();
             let now = current_unix_epoch()?;
 
-            for user in room
-                .users
-                .iter_mut()
-                .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
-            {
+            for user in room.users.iter_mut().chain(room.djs.iter_mut()) {
                 if user_id == user.id {
                     user.last_disconnect = Some(now);
                 }
@@ -154,11 +149,13 @@ fn handle_message(
     msg: Message,
     addr: SocketAddr,
 ) -> Result<(), Box<dyn Error>> {
-    let input: Result<Input, serde_json::Error> = serde_json::from_str(msg.to_text()?);
+    let jd = &mut serde_json::Deserializer::from_str(msg.to_text()?);
+    let input: Result<Input, _> = serde_path_to_error::deserialize(jd);
+
     let conn = pool.get()?;
 
     if let Err(e) = input {
-        println!(
+        error!(
             "Couldn't deserialize: {:?}, serde error: {:?}",
             msg.to_text(),
             e
@@ -178,7 +175,7 @@ fn handle_message(
                 // Reset room timeout for user.
                 room.users
                     .iter_mut()
-                    .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+                    .chain(room.djs.iter_mut())
                     .for_each(|x| {
                         if x.id == user.id {
                             x.last_disconnect = None;
@@ -186,11 +183,7 @@ fn handle_message(
                     });
 
                 if !room.users.iter().any(|x| x.id == user.id) {
-                    if let Some(djs) = &room.djs {
-                        if !djs.iter().any(|x| x.id == user.id) {
-                            room.users.push(user.clone());
-                        }
-                    } else {
+                    if !room.djs.iter().any(|x| x.id == user.id) {
                         room.users.push(user.clone());
                     }
                 }
@@ -210,11 +203,7 @@ fn handle_message(
                     if user.queue.len() > 0 {
                         room.users.retain(|x| x.id != user_id);
 
-                        if let Some(djs) = &mut room.djs {
-                            djs.after.push(user);
-                        } else {
-                            room.djs = Some(Zipper::singleton(user))
-                        }
+                        room.djs.push_back(user);
                     }
                 }
 
@@ -259,15 +248,14 @@ fn handle_message(
             Input::AddTrack(user_id, track) => {
                 let mut room = get_room("the_room", &conn)?.unwrap();
 
-                if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
+                if let Some(this_user) = room
+                    .users
+                    .iter_mut()
+                    .chain(room.djs.iter_mut())
+                    .find(|x| x.id == user_id)
+                {
                     this_user.queue.push(track.clone());
-                } else if let Some(djs) = &mut room.djs {
-                    let this_dj = djs.iter_mut().find(|x| x.id == user_id);
-
-                    if let Some(dj) = this_dj {
-                        dj.queue.push(track.clone());
-                    }
-                }
+                };
 
                 start_playing_if_theres_a_dj(
                     &mut room,
@@ -289,15 +277,14 @@ fn handle_message(
             Input::RemoveTrack(user_id, track_id) => {
                 let mut room = get_room("the_room", &conn)?.unwrap();
 
-                if let Some(this_user) = room.users.iter_mut().find(|x| x.id == user_id) {
+                if let Some(this_user) = room
+                    .users
+                    .iter_mut()
+                    .chain(room.djs.iter_mut())
+                    .find(|x| x.id == user_id)
+                {
                     this_user.queue.retain(|x| x.id != track_id);
-                } else if let Some(djs) = &mut room.djs {
-                    let this_dj = djs.iter_mut().find(|x| x.id == user_id);
-
-                    if let Some(dj) = this_dj {
-                        dj.queue.retain(|x| x.id != track_id);
-                    }
-                }
+                };
 
                 prune_djs_without_queue(&mut room);
 
@@ -336,9 +323,9 @@ fn send_to_all(peers: PeerMap, data: &String) {
 fn start_playing_if_theres_a_dj(room: &mut Room, pool: &Pool, peers: PeerMap, now: u64) {
     let play_new_track = {
         if let None = room.playing {
-            if let Some(djs) = &mut room.djs {
-                if djs.current.queue.len() > 0 {
-                    Some(djs.current.queue.remove(0))
+            if let Some(current_dj) = room.djs.front_mut() {
+                if current_dj.queue.len() > 0 {
+                    Some(current_dj.queue.remove(0))
                 } else {
                     None
                 }
@@ -362,32 +349,28 @@ fn start_playing_if_theres_a_dj(room: &mut Room, pool: &Pool, peers: PeerMap, no
     }
 }
 
-async fn things(
-    later_playing_id: String,
+async fn queue(
     track: Track,
     peers: PeerMap,
     pool: Pool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let playing_duration = Duration::from_millis(track.duration_ms as u64);
     let next_up_duration = Duration::from_millis(5000);
+
+    info!("Starting to queue {:?}", track);
 
     async_std::task::sleep(playing_duration - next_up_duration).await;
 
     // Have we changed playing song because of a downvote? If so return from this function to stop queueing.
     let playing = get_room("the_room", &pool.get()?)?.unwrap().playing;
-    if Some(&later_playing_id) != playing.as_ref().map(|x| &x.id) {
+    if Some(&track.id) != playing.map(|x| x.id).as_ref() {
+        info!("Track downvoted, bailing on queueing {:?}", track);
         return Ok(());
     }
 
     set_next_up_from_queue(pool.clone(), peers.clone())?;
 
     async_std::task::sleep(Duration::from_millis(5000)).await;
-
-    // Have we changed playing song because of a downvote? If so return from this function to stop more playing.
-    let playing = get_room("the_room", &pool.get()?)?.unwrap().playing;
-    if Some(later_playing_id) != playing.map(|x| x.id) {
-        return Ok(());
-    }
 
     play_from_next_up(pool, peers)
 }
@@ -403,18 +386,19 @@ fn play(room: &mut Room, pool: Pool, peers: PeerMap, track: Track, now: u64) {
         downvotes: HashSet::new(),
     };
 
-    let later_playing_id = playing.id.clone();
-
     room.playing = Some(playing);
 
     println!("Now playing: {:?} in room {:?}", track, room);
 
     let later_peers = peers.clone();
     let later_pool = pool.clone();
-    task::spawn(async move { things(later_playing_id, track, later_peers, later_pool) });
+    task::spawn(async move { queue(track, later_peers, later_pool).await });
 }
 
-fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) -> Result<(), Box<dyn Error>> {
+fn play_from_next_up(
+    later_pool: Pool,
+    later_peers: PeerMap,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let conn = later_pool.get()?;
     let mut room = get_room("the_room", &conn)?.unwrap();
 
@@ -444,20 +428,24 @@ fn play_from_next_up(later_pool: Pool, later_peers: PeerMap) -> Result<(), Box<d
     Ok(())
 }
 
-fn set_next_up_from_queue(later_pool: Pool, later_peers: PeerMap) -> Result<(), Box<dyn Error>> {
+fn set_next_up_from_queue(
+    later_pool: Pool,
+    later_peers: PeerMap,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let conn = later_pool.get()?;
     let mut room = get_room("the_room", &conn)?.unwrap();
 
-    if let Some(djs) = &mut room.djs {
-        next_djs(djs);
+    next_djs(&mut room.djs);
 
-        if djs.current.queue.len() > 0 {
-            room.next_up = Some(djs.current.queue.remove(0));
+    if let Some(current_dj) = room.djs.front_mut() {
+        if current_dj.queue.len() > 0 {
+            room.next_up = Some(current_dj.queue.remove(0));
         } else {
             room.next_up = None;
         }
     }
-    println!("Next up queued: {:?}", room.next_up);
+
+    info!("Next up queued: {:?}", room.next_up);
 
     if let Some(next) = room.next_up.clone() {
         send_to_all(
@@ -478,14 +466,12 @@ fn downvote(user_id: String, room: &mut Room, now: u64, pool: Pool, peers: PeerM
     }
 
     if let Some(playing) = &room.playing {
-        let djs_len: usize = room.djs.as_ref().map(|x| x.len()).unwrap_or(0);
+        let djs_len: usize = room.djs.len();
 
         if playing.downvotes.len() as f64 >= ((room.users.len() + djs_len) as f64 / 2f64) {
             room.playing = None;
 
-            if let Some(djs) = &mut room.djs {
-                next_djs(djs);
-            }
+            next_djs(&mut room.djs);
 
             start_playing_if_theres_a_dj(room, &pool, peers.clone(), now);
             prune_djs_without_queue(room);
@@ -530,7 +516,7 @@ fn heartbeat_check_helper(peers_db: PeerMap, pool: Pool) -> Result<(), Box<dyn E
     let user_ids = room
         .users
         .iter_mut()
-        .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
+        .chain(room.djs.iter_mut())
         .filter_map(|x| {
             if let Some(last_disconnect) = x.last_disconnect {
                 if now - last_disconnect < ROOM_TIMEOUT {
@@ -611,11 +597,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     start_playing_if_theres_a_dj(&mut room, &pool, peers.clone(), now);
 
-    for user in room
-        .users
-        .iter_mut()
-        .chain(room.djs.iter_mut().flat_map(|x| x.iter_mut()))
-    {
+    for user in room.users.iter_mut().chain(room.djs.iter_mut()) {
         user.last_disconnect = Some(now);
     }
 
@@ -627,11 +609,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let acceptor = acceptor.clone();
         let pool = pool.clone();
 
-        task::spawn(async move {
-            handle_connection(peers, stream, &acceptor, addr, pool)
-                .await
-                .unwrap_or_else(|e| error!("Error on connection: {}", e))
-        });
+        task::spawn(async move { handle_connection(peers, stream, &acceptor, addr, pool).await });
     }
 
     Ok(())
@@ -643,6 +621,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::VecDeque;
+
     use crate::*;
     use shared::lib::{TrackArt, User};
 
@@ -680,7 +660,7 @@ mod test {
         let room = Room {
             id: "test_room".into(),
             users: Vec::new(),
-            djs: None,
+            djs: VecDeque::new(),
             playing: None,
             next_up: Some(test_track),
         };
@@ -706,7 +686,7 @@ mod test {
         let room = Room {
             id: "test_room".into(),
             users: Vec::new(),
-            djs: None,
+            djs: VecDeque::new(),
             playing: None,
             next_up: Some(test_track.clone()),
         };
@@ -738,10 +718,13 @@ mod test {
             last_disconnect: Some(1234),
         };
 
+        let mut djs = VecDeque::new();
+        djs.push_back(dj);
+
         let mut room = Room {
             id: "test_room".into(),
             users: Vec::new(),
-            djs: Some(Zipper::singleton(dj)),
+            djs,
             playing: None,
             next_up: None,
         };
@@ -793,14 +776,14 @@ mod test {
             last_disconnect: Some(1234),
         };
 
+        let mut djs = VecDeque::new();
+        djs.push_back(current_dj.clone());
+        djs.push_back(next_dj.clone());
+
         let mut room = Room {
             id: "test_room".into(),
             users: vec![other_user.clone()],
-            djs: Some(Zipper {
-                before: vec![],
-                current: current_dj.clone(),
-                after: vec![next_dj.clone()],
-            }),
+            djs,
             playing: Some(playing.clone()),
             next_up: None,
         };
@@ -824,17 +807,16 @@ mod test {
             downvotes: HashSet::new(),
         };
 
+        let mut djs = VecDeque::new();
+        djs.push_back(User {
+            queue: vec![],
+            ..next_dj
+        });
+
         let expected_room = Room {
             id: "test_room".into(),
             users: vec![other_user, current_dj],
-            djs: Some(Zipper {
-                before: vec![],
-                current: User {
-                    queue: vec![],
-                    ..next_dj
-                },
-                after: vec![],
-            }),
+            djs,
             playing: Some(expected_playing.clone()),
             next_up: None,
         };

@@ -34,3 +34,4 @@ tungstenite = "0.10.1"
 async-tungstenite = { version = "0.4.0", features = ["async-std-runtime", "async-tls"] }
 
 rspotify = {git = "https://github.com/edmellum/rspotify", features = ["blocking"]}
+serde_path_to_error = "0.1.3"

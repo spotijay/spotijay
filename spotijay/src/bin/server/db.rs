@@ -1,6 +1,7 @@
 use crate::Connection;
+
 use rusqlite::params;
-use shared::lib::{next_djs, Room};
+use shared::lib::Room;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -83,23 +84,8 @@ pub fn update_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn remove_user_from_room(room: &mut Room, user_ids: Vec<String>) {
+    room.djs.retain(|x| !user_ids.contains(&x.id));
     room.users.retain(|x| !user_ids.contains(&x.id));
-
-    if let Some(djs) = &mut room.djs {
-        djs.before.retain(|x| !user_ids.contains(&x.id));
-        djs.after.retain(|x| !user_ids.contains(&x.id));
-
-        if user_ids.contains(&djs.current.id) {
-            if djs.before.len() == 0 && djs.after.len() == 0 {
-                room.djs = None;
-            } else {
-                next_djs(djs);
-
-                djs.before.pop();
-                room.djs = Some(djs.to_owned());
-            }
-        }
-    }
 }
 
 fn _insert_room(room: Room, conn: &Connection) -> rusqlite::Result<()> {
