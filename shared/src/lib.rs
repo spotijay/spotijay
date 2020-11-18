@@ -102,32 +102,29 @@ pub mod lib {
     }
 
     pub fn next_djs(djs: &mut VecDeque<User>) {
-        loop {
-            if djs.len() == 0 {
-                break;
-            }
-
-            djs.rotate_left(1);
-
-            if let Some(dj) = djs.front() {
-                if dj.queue.len() > 0 {
-                    break;
-                } else {
-                    djs.pop_front();
-                }
-            } else {
-                break;
-            }
+        if djs.len() == 0 {
+            return;
         }
+
+        djs.rotate_left(1);
     }
 
     pub fn prune_djs_without_queue(room: &mut Room) {
         let current_dj = room.djs.pop_front();
-        room.djs.retain(|x| x.queue.len() > 0);
+
+        let (with_queue, without_queue) = room
+            .djs
+            .clone()
+            .into_iter()
+            .partition(|x| x.queue.len() > 0);
+        room.djs = with_queue;
+        room.users.append(&mut Vec::from(without_queue));
 
         if let Some(current_dj) = current_dj {
             if current_dj.queue.len() != 0 || room.playing.is_some() {
                 room.djs.push_front(current_dj);
+            } else {
+                room.users.push(current_dj);
             }
         }
     }
